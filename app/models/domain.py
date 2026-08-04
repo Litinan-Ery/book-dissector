@@ -53,6 +53,36 @@ class QualityStatus(str, Enum):
     FAIL = "fail"
 
 
+class CharacterRange(VersionedModel):
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> CharacterRange:
+        if self.end <= self.start:
+            raise ValueError("character range is empty")
+        return self
+
+
+class StructureIssue(VersionedModel):
+    code: str
+    message: str
+    blocking: bool = True
+    chapter_title: str = ""
+    start: int | None = None
+    end: int | None = None
+
+
+class StructureReport(VersionedModel):
+    valid: bool
+    body_start: int = Field(ge=0)
+    body_end: int = Field(ge=0)
+    body_coverage: float = Field(ge=0, le=1)
+    uncovered_ranges: list[CharacterRange] = Field(default_factory=list)
+    duplicate_ranges: list[CharacterRange] = Field(default_factory=list)
+    issues: list[StructureIssue] = Field(default_factory=list)
+
+
 class RunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -233,4 +263,3 @@ class RunManifest(VersionedModel):
     strength: str = "standard"
     model: str = "deepseek-v4-flash"
     prompt_version: str = "1.0"
-

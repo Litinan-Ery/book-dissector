@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ... import config
+from ..modalities import inventory_content
+from ..quality import validate_structure
+from ..runs import fingerprint_file
 
 # 常见"第X章 / Chapter X"标题模式，用于无结构格式（TXT）的章节切分
 CHAPTER_RE = re.compile(
@@ -70,6 +73,17 @@ def extract_book(book_id: str, path: Path) -> ExtractResult:
         return ExtractResult(error=f"不支持的格式：{ext}")
 
     result = impl.extract(path)
+    source_fingerprint = fingerprint_file(path)
+    structure_report = validate_structure(result.text, result.chapters)
+    content_blocks = inventory_content(
+        result.text,
+        source_fingerprint,
+        result.source_format or ext.lstrip("."),
+        result.chapters,
+    )
+    modality_warnings = sorted(
+        {block.parse_warning for block in content_blocks if block.parse_warning}
+    )
 
     config.ensure_dirs()
     txt_path = config.BOOKS_DIR / f"{book_id}.txt"
@@ -83,6 +97,10 @@ def extract_book(book_id: str, path: Path) -> ExtractResult:
             "author": result.author,
             "word_count": 0,
             "chapters": [],
+            "source_fingerprint": source_fingerprint,
+            "structure_report": structure_report.model_dump(mode="json"),
+            "content_blocks": [block.model_dump(mode="json") for block in content_blocks],
+            "modality_warnings": modality_warnings,
             "extract_status": "error",
             "extract_error": result.error or "未能提取到文本（可能是扫描版 PDF）",
         }
@@ -98,10 +116,14 @@ def extract_book(book_id: str, path: Path) -> ExtractResult:
         "title": result.title or path.stem,
         "author": result.author,
         "word_count": result.word_count,
+        "source_fingerprint": source_fingerprint,
         "chapters": [
             {"title": c.title, "level": c.level, "start_char": c.start_char, "end_char": c.end_char}
             for c in result.chapters
         ],
+        "structure_report": structure_report.model_dump(mode="json"),
+        "content_blocks": [block.model_dump(mode="json") for block in content_blocks],
+        "modality_warnings": modality_warnings,
         "extract_status": "ok",
         "extract_error": "",
     }

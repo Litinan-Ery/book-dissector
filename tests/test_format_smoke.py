@@ -3,6 +3,9 @@ from pathlib import Path
 import fitz
 
 from app.core.extractors import md, pdf, txt
+from app.core.modalities import inventory_content
+from app.core.runs import fingerprint_file
+from app.models.domain import Modality
 
 
 def test_markdown_preserves_heading_boundaries(tmp_path: Path) -> None:
@@ -32,6 +35,9 @@ def test_pdf_extracts_text_or_reports_scan_warning(tmp_path: Path) -> None:
     document = fitz.open()
     page = document.new_page()
     page.insert_text((72, 72), "Fixture PDF body " * 12)
+    pixel = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 2, 2), False)
+    pixel.clear_with(0xFF0000)
+    page.insert_image(fitz.Rect(72, 100, 100, 128), stream=pixel.tobytes("png"))
     document.save(source)
     document.close()
 
@@ -39,4 +45,6 @@ def test_pdf_extracts_text_or_reports_scan_warning(tmp_path: Path) -> None:
 
     assert result.ok
     assert "Fixture PDF body" in result.text
-
+    blocks = inventory_content(result.text, fingerprint_file(source), "pdf")
+    assert Modality.IMAGE in {block.modality for block in blocks}
+    assert any(block.parse_warning for block in blocks if block.modality == Modality.IMAGE)
