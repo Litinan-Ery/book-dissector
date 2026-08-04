@@ -65,6 +65,12 @@ def _save_result(book_id: str, result: PruneResultOut) -> None:
                     {"title": c.title, "level": c.level, "start_char": c.start_char, "end_char": c.end_char}
                     for c in result.pruned_chapters
                 ],
+                "evidence_regions": [
+                    {"start": r.start, "end": r.end, "reason": r.reason, "label": r.label}
+                    for r in result.evidence_regions
+                ],
+                "span_map": [entry.model_dump(mode="json") for entry in result.span_map],
+                "span_map_report": result.span_map_report.model_dump(mode="json"),
             },
             ensure_ascii=False,
             indent=2,
@@ -87,6 +93,12 @@ def _to_out(result) -> PruneResultOut:
             {"title": c.title, "level": c.level, "start_char": c.start_char, "end_char": c.end_char}
             for c in getattr(result, "pruned_chapters", [])
         ],
+        evidence_regions=[
+            PruneRegion(start=r.start, end=r.end, reason=r.reason, label=r.label)
+            for r in getattr(result, "evidence_regions", [])
+        ],
+        span_map=list(getattr(result, "span_map", [])),
+        span_map_report=result.span_map_report,
     )
 
 
@@ -133,4 +145,24 @@ def get_prune_result(book_id: str) -> PruneResultOut:
         original_chars=data.get("original_chars", 0),
         removed_chars=data.get("removed_chars", 0),
         kept_ratio=data.get("kept_ratio", 0.0),
+        pruned_chapters=[
+            {
+                "title": c.get("title", ""),
+                "level": c.get("level", 1),
+                "start_char": c.get("start_char", 0),
+                "end_char": c.get("end_char", 0),
+            }
+            for c in data.get("pruned_chapters", [])
+        ],
+        evidence_regions=[
+            PruneRegion(
+                start=r["start"], end=r["end"], reason=r["reason"], label=r.get("label", "")
+            )
+            for r in data.get("evidence_regions", [])
+        ],
+        span_map=data.get("span_map", []),
+        span_map_report=data.get(
+            "span_map_report",
+            {"valid": False, "source_coverage": 0.0, "target_coverage": 0.0},
+        ),
     )

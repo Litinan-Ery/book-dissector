@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass, field
 
 from .extractors.base import Chapter
+from .spanmap import build_span_map, validate_span_map
+from ..models.domain import SpanMapEntry, SpanMapReport
 
 # ---- 关键词模式（匹配"单行"标题；行首 Markdown # 前缀由 _line 统一剥离）----
 _COPYRIGHT_PAT = re.compile(
@@ -71,6 +73,13 @@ class PruneResult:
     original_chars: int = 0
     removed_chars: int = 0
     pruned_chapters: list[Chapter] = field(default_factory=list)
+    evidence_regions: list[Region] = field(default_factory=list)
+    span_map: list[SpanMapEntry] = field(default_factory=list)
+    span_map_report: SpanMapReport = field(
+        default_factory=lambda: SpanMapReport(
+            valid=False, source_coverage=0.0, target_coverage=0.0
+        )
+    )
 
     @property
     def kept_ratio(self) -> float:
@@ -187,6 +196,7 @@ def prune(
     chapters = chapters or []
     text_len = len(text)
     regions: list[Region] = []
+    evidence_regions: list[Region] = []
     line_spans = _line_spans(text)
 
     # ---- 0. frontmatter（MD 元信息块）----
@@ -227,12 +237,12 @@ def prune(
         if len(block) < 3000 and _count_toc_entries(text, bstart, bend) >= 4:
             regions.append(Region(bstart, bend, "toc", _summarize(text, bstart, bend)))
 
-    # ---- 2. 书末部分：参考文献 / 索引 / 尾注 ----
+    # ---- 2. 书末部分：保留为证据区，不再按类型一刀切删除 ----
     for pos, heading in _find_heading_positions(text, _BACKMATTER_PAT):
         if main_start is not None and pos < main_start:
             continue
         end_pos = _next_structural_boundary(text, chapters, pos + len(heading))
-        regions.append(Region(pos, end_pos, "backmatter", heading))
+        evidence_regions.append(Region(pos, end_pos, "backmatter_evidence", heading))
 
     # ---- 3. 重复段：非空长行出现 >=3 次 ----
     dup_lines: dict[str, int] = {}
@@ -242,7 +252,8 @@ def prune(
             dup_lines[ln] = dup_lines.get(ln, 0) + 1
     for s, cnt in dup_lines.items():
         if cnt >= 3:
-            for m in re.finditer(re.escape(s), text):
+            # 第一处是知识来源，只有后续复本可删除。
+            for m in list(re.finditer(re.escape(s), text))[1:]:
                 regions.append(Region(m.start(), m.end(), "duplicate", s[:30]))
 
     # ---- 4. 恢复用户指定区域 ----
@@ -265,6 +276,8 @@ def prune(
 
     # 计算删减稿中的章节新偏移（供后续阶段使用，避免偏移错位）
     pruned_chapters = _remap_chapters(chapters, regions, text_len, pruned)
+    span_map = build_span_map(text_len, regions)
+    span_map_report = validate_span_map(text, pruned, span_map)
 
     return PruneResult(
         pruned_text=pruned,
@@ -272,6 +285,9 @@ def prune(
         original_chars=text_len,
         removed_chars=removed,
         pruned_chapters=pruned_chapters,
+        evidence_regions=evidence_regions,
+        span_map=span_map,
+        span_map_report=span_map_report,
     )
 
 

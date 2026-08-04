@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from .domain import SpanMapEntry, SpanMapReport
+
 
 class BookInfo(BaseModel):
     """导入书籍的基本信息（含 M2 文本提取结果）。"""
@@ -111,7 +113,14 @@ class PruneResultOut(BaseModel):
     original_chars: int
     removed_chars: int
     kept_ratio: float
-    pruned_chapters: list[ChapterInfo] = []
+    pruned_chapters: list[ChapterInfo] = Field(default_factory=list)
+    evidence_regions: list[PruneRegion] = Field(default_factory=list)
+    span_map: list[SpanMapEntry] = Field(default_factory=list)
+    span_map_report: SpanMapReport = Field(
+        default_factory=lambda: SpanMapReport(
+            valid=False, source_coverage=0.0, target_coverage=0.0
+        )
+    )
 
 
 class RestoreRequest(BaseModel):

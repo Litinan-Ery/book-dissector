@@ -83,6 +83,13 @@ class StructureReport(VersionedModel):
     issues: list[StructureIssue] = Field(default_factory=list)
 
 
+class SpanMapReport(VersionedModel):
+    valid: bool
+    source_coverage: float = Field(ge=0, le=1)
+    target_coverage: float = Field(ge=0, le=1)
+    issues: list[str] = Field(default_factory=list)
+
+
 class RunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
