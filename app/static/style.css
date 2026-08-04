@@ -1,0 +1,167 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #f5f6f8;
+  color: #24292f;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+header { margin-bottom: 20px; }
+h1 { font-size: 26px; }
+.subtitle { color: #57606a; margin-top: 4px; }
+main { display: flex; flex-direction: column; gap: 16px; }
+.card {
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+.card h2 { font-size: 16px; margin-bottom: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+input[type="password"], input[type="file"] {
+  flex: 1;
+  min-width: 200px;
+  padding: 6px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+}
+button {
+  padding: 6px 14px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #f6f8fa;
+  cursor: pointer;
+}
+button.primary { background: #0969da; color: #fff; border-color: #0969da; }
+button.danger { background: #cf222e; color: #fff; border-color: #cf222e; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.hint { color: #57606a; font-size: 12px; margin-top: 8px; }
+table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #eaeef2; }
+footer { margin-top: 24px; text-align: center; }
+HTML
+cat > app/static/app.js <<'JS'
+"use strict";
+
+const $ = (sel) => document.querySelector(sel);
+
+/* ---------- 设置区 ---------- */
+async function loadSettings() {
+  try {
+    const res = await fetch("/api/settings");
+    const data = await res.json();
+    const configured = data.deepseek_api_key_configured;
+    $("#settings-status").textContent = configured
+      ? `已配置密钥 · 模型：${data.deepseek_model}`
+      : "尚未配置密钥（模型：" + data.deepseek_model + "）";
+  } catch (err) {
+    $("#settings-status").textContent = "读取设置失败：" + err.message;
+  }
+}
+
+$("#settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const key = $("#api-key").value.trim();
+  const res = await fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deepseek_api_key: key }),
+  });
+  if (res.ok) {
+    $("#api-key").value = "";
+    $("#settings-status").textContent = "已保存。";
+    loadSettings();
+  } else {
+    $("#settings-status").textContent = "保存失败。";
+  }
+});
+
+$("#btn-test").addEventListener("click", async () => {
+  $("#settings-status").textContent = "测试中…";
+  const res = await fetch("/api/settings/test", { method: "POST" });
+  const data = await res.json();
+  $("#settings-status").textContent = data.message;
+});
+
+$("#btn-clear").addEventListener("click", async () => {
+  await fetch("/api/settings", { method: "DELETE" });
+  $("#settings-status").textContent = "已清除密钥。";
+});
+
+/* ---------- 书库区 ---------- */
+async function refreshBooks() {
+  const res = await fetch("/api/books");
+  const books = await res.json();
+  const body = $("#book-body");
+  body.innerHTML = "";
+  if (books.length === 0) {
+    body.innerHTML = '<tr><td colspan="4" class="hint">暂无书籍，请上传。</td></tr>';
+    return;
+  }
+  for (const b of books) {
+    const tr = document.createElement("tr");
+    const size = b.size_bytes > 1024 * 1024
+      ? (b.size_bytes / 1024 / 1024).toFixed(1) + " MB"
+      : Math.max(1, Math.round(b.size_bytes / 1024)) + " KB";
+    const time = new Date(b.uploaded_at).toLocaleString("zh-CN");
+    tr.innerHTML =
+      `<td>${b.filename}</td><td>${size}</td><td>${time}</td>` +
+      `<td><button class="btn-disassemble" data-id="${b.id}">拆解</button></td>`;
+    tr.querySelector(".btn-disassemble").addEventListener("click", () => {
+      alert("拆解流水线将在 M3/M4 里程碑实现（book_id=" + b.id + "）");
+    });
+    body.appendChild(tr);
+  }
+}
+
+async function uploadBooks(files) {
+  const status = $("#upload-status");
+  for (const file of files) {
+    status.textContent = "上传中：" + file.name;
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch("/api/books/upload", { method: "POST", body: fd });
+    if (!res.ok) {
+      const err = await res.json();
+      status.textContent = file.name + " 上传失败：" + (err.detail || res.status);
+    }
+  }
+  status.textContent = "上传完成。";
+  refreshBooks();
+}
+
+$("#btn-upload").addEventListener("click", () => {
+  const files = $("#file-input").files;
+  if (files.length > 0) uploadBooks(files);
+});
+
+/* ---------- 初始化 ---------- */
+loadSettings();
+refreshBooks();
+JS
+echo "frontend written" && ls -la app/static/
+.split { display: flex; gap: 12px; margin-top: 8px; }
+.split > div { flex: 1; min-width: 0; }
+.preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f6f8fa;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.6;
+}
+#prune-regions { list-style: none; margin: 8px 0; }
+#prune-regions li {
+  display: flex; gap: 8px; align-items: center;
+  padding: 6px 8px; border-bottom: 1px solid #eaeef2; font-size: 13px;
+}
+.region-reason {
+  font-size: 11px; padding: 1px 6px; border-radius: 10px;
+  background: #fff8c5; color: #6b5900; white-space: nowrap;
+}
+.region-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

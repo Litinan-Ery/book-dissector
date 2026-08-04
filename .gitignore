@@ -1,0 +1,18 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 本机密钥与运行产物
+config.json
+storage/
+
+# 测试与编辑器临时文件
+.ruff_cache/
+.mypy_cache/
+*.tmp
+*.swp
+

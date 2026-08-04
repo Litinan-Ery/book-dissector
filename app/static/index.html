@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>图书拆解器</title>
+  <link rel="stylesheet" href="/static/style.css?v=2" />
+</head>
+<body>
+  <header>
+    <h1>图书拆解器</h1>
+    <p class="subtitle">导入书籍 → 删减无关内容 → 压缩提炼 → 导出精华 MD</p>
+  </header>
+
+  <main>
+    <!-- 设置区 -->
+    <section class="card" id="settings-card">
+      <h2>模型设置</h2>
+      <form id="settings-form">
+        <label for="api-key">DeepSeek API Key</label>
+        <div class="row">
+          <input type="password" id="api-key" placeholder="sk-..." autocomplete="off" />
+          <button type="submit" class="primary">保存</button>
+          <button type="button" id="btn-test">测试连接</button>
+          <button type="button" id="btn-clear" class="danger">清除</button>
+        </div>
+        <p class="hint" id="settings-status">加载中…</p>
+      </form>
+    </section>
+
+    <!-- 书库区 -->
+    <section class="card">
+      <h2>书库</h2>
+      <div class="row">
+        <input type="file" id="file-input" accept=".epub,.pdf,.txt,.md" multiple />
+        <button type="button" id="btn-upload" class="primary">上传书籍</button>
+      </div>
+      <p class="hint" id="upload-status"></p>
+      <div id="upload-progress-wrap" hidden>
+        <progress id="upload-progress" max="100" value="0"></progress>
+        <span id="upload-progress-text" class="hint">0%</span>
+      </div>
+      <table id="book-table">
+        <thead>
+          <tr><th>书名</th><th>作者</th><th>格式</th><th>字数</th><th>状态</th><th>文件名</th><th>大小</th><th>上传时间</th><th>操作</th></tr>
+        </thead>
+        <tbody id="book-body"></tbody>
+      </table>
+    </section>
+    <!-- 删减预览面板 -->
+    <section class="card" id="prune-panel" hidden>
+      <h2 id="prune-title">删减预览</h2>
+      <p class="hint" id="prune-stats"></p>
+      <h3>删除区域（点击"恢复"可撤销误删）</h3>
+      <ul id="prune-regions"></ul>
+      <div class="split">
+        <div>
+          <h3>原文（片段）</h3>
+          <pre id="prune-original" class="preview"></pre>
+        </div>
+        <div>
+          <h3>删减稿</h3>
+          <pre id="prune-result" class="preview"></pre>
+        </div>
+      </div>
+      <button type="button" id="btn-close-prune">关闭预览</button>
+    </section>
+
+    <!-- 拆解面板（M4 蒸馏） -->
+    <section class="card" id="distill-panel" hidden>
+      <h2 id="distill-title">拆解</h2>
+      <div class="row">
+        <select id="distill-type">
+          <option value="general">社科 / 商业 / 工具书</option>
+          <option value="fiction">小说 / 文学</option>
+          <option value="technical">技术书</option>
+        </select>
+        <select id="distill-strength">
+          <option value="conservative">保守（约 25%）</option>
+          <option value="standard" selected>标准（约 15%）</option>
+          <option value="aggressive">激进（约 8%）</option>
+        </select>
+        <button type="button" id="btn-start-distill" class="primary">开始拆解</button>
+        <button type="button" id="btn-close-distill">关闭</button>
+      </div>
+      <p class="hint" id="distill-progress"></p>
+      <pre id="distill-result" class="preview" hidden></pre>
+      <p class="hint" id="distill-stats"></p>
+      <div class="row" id="export-actions" hidden>
+        <button type="button" id="btn-preview-export">预览导出内容</button>
+        <button type="button" id="btn-do-export" class="primary">导出为 MD</button>
+      </div>
+      <p class="hint" id="export-status"></p>
+    </section>
+  </main>
+
+  <footer class="hint">数据仅在本机处理；API Key 仅保存在本机 config.json。</footer>
+  <script src="/static/app.js?v=2"></script>
+</body>
+</html>

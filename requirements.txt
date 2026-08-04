@@ -1,0 +1,16 @@
+# 图书拆解器 —— Web 服务依赖
+
+# 服务基础设施
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+httpx>=0.27
+pydantic>=2.6
+
+# 书籍格式提取（M2）
+ebooklib>=0.18
+pymupdf>=1.24
+charset-normalizer>=3.3
+
+# 开发与回归测试
+pytest>=8.2
