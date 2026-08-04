@@ -5,7 +5,14 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from .domain import KnowledgeUnit, SpanMapEntry, SpanMapReport, UnitCoverageReport
+from .domain import (
+    KnowledgeUnit,
+    QualityReport,
+    QualityStatus,
+    SpanMapEntry,
+    SpanMapReport,
+    UnitCoverageReport,
+)
 
 
 class BookInfo(BaseModel):
@@ -47,7 +54,7 @@ class TaskStatus(BaseModel):
     """拆解任务状态。"""
 
     task_id: str
-    status: str  # pending / running / done / error
+    status: str  # pending / running / done / quality_failed / error
     stage: str = ""
     current: int = 0
     total: int = 0
@@ -90,6 +97,15 @@ class DistillResultOut(BaseModel):
     anchor_coverage: float = 0.0
     unit_coverage: UnitCoverageReport = Field(
         default_factory=lambda: UnitCoverageReport(coverage=0.0)
+    )
+    duplicate_merged_count: int = 0
+    quality_report: QualityReport = Field(
+        default_factory=lambda: QualityReport(
+            status=QualityStatus.FAIL,
+            body_coverage=0.0,
+            anchor_coverage=0.0,
+            blocking_issues=["尚未执行质量校验"],
+        )
     )
 
 

@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 
 from .. import config
 from ..core.distiller import distill_book
+from ..models.domain import QualityStatus
 from ..models.schemas import (
     DisassembleRequest,
     DistillResultOut,
@@ -81,7 +82,7 @@ async def start_disassemble(book_id: str, req: DisassembleRequest) -> TaskStatus
             )
             state.result = _to_out(result)
             _persist(book_id, result)
-            state.status = "done"
+            state.status = _completion_status(result)
         except Exception as exc:
             state.status = "error"
             state.error = str(exc)
@@ -105,9 +106,17 @@ def task_result(book_id: str) -> DistillResultOut:
         raise HTTPException(status_code=404, detail="任务不存在")
     if state.status == "error":
         raise HTTPException(status_code=500, detail=state.error or "拆解失败")
-    if state.status != "done" or state.result is None:
+    if state.status not in ("done", "quality_failed") or state.result is None:
         raise HTTPException(status_code=409, detail="任务尚未完成")
     return state.result
+
+
+def _completion_status(result) -> str:
+    return (
+        "done"
+        if result.quality_report.status == QualityStatus.PASS
+        else "quality_failed"
+    )
 
 
 def _to_status(state: TaskState) -> TaskStatus:
@@ -150,6 +159,8 @@ def _to_out(result) -> DistillResultOut:
         knowledge_units=result.knowledge_units,
         anchor_coverage=result.anchor_coverage,
         unit_coverage=result.unit_coverage,
+        duplicate_merged_count=result.duplicate_merged_count,
+        quality_report=result.quality_report,
     )
 
 
@@ -176,6 +187,10 @@ def _persist(book_id: str, result) -> None:
                 "knowledge_units": [
                     unit.model_dump(mode="json") for unit in result.knowledge_units
                 ],
+                "duplicate_merged_count": result.duplicate_merged_count,
+                "quality_report": result.quality_report.model_dump(mode="json"),
+                "model": config.DEEPSEEK_MODEL,
+                "prompt_version": "1.0",
                 "chapters": [
                     {
                         "title": c.title,
@@ -188,6 +203,14 @@ def _persist(book_id: str, result) -> None:
                     for c in result.chapters
                 ],
             },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (config.INTERMEDIATE_DIR / f"{book_id}.quality.json").write_text(
+        json.dumps(
+            result.quality_report.model_dump(mode="json"),
             ensure_ascii=False,
             indent=2,
         ),

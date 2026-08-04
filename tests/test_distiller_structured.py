@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 
 from app import config
-from app.api.tasks import _persist, _to_out
+from app.api.tasks import _completion_status, _persist, _to_out
 from app.core.distiller import QualityGateError, distill_book
 from app.core.spanmap import build_span_map
+from app.models.domain import QualityStatus
 
 
 def _write_book(tmp_path: Path, monkeypatch, *, structure_valid: bool = True) -> tuple[str, str]:
@@ -85,6 +86,8 @@ def test_fake_distillation_produces_only_anchored_knowledge_units(
     assert result.knowledge_units
     assert result.anchor_coverage == 1.0
     assert result.unit_coverage.coverage == 1.0
+    assert result.quality_report.status == QualityStatus.PASS
+    assert _completion_status(result) == "done"
     assert result.api_calls == len(result.distill_units)
     for knowledge in result.knowledge_units:
         assert knowledge.anchors
@@ -102,6 +105,10 @@ def test_fake_distillation_produces_only_anchored_knowledge_units(
     assert persisted["unit_coverage"]["coverage"] == 1.0
     assert persisted["knowledge_units"][0]["anchors"]
     assert persisted["distill_units"][0]["source_spans"]
+    quality = json.loads(
+        (config.INTERMEDIATE_DIR / f"{book_id}.quality.json").read_text(encoding="utf-8")
+    )
+    assert quality["status"] == "pass"
 
 
 def test_structure_gate_blocks_model_calls_before_distillation(
@@ -111,3 +118,13 @@ def test_structure_gate_blocks_model_calls_before_distillation(
 
     with pytest.raises(QualityGateError, match="结构"):
         asyncio.run(distill_book(book_id, use_fake=True))
+
+
+def test_quality_failure_is_not_reported_as_done(tmp_path: Path, monkeypatch) -> None:
+    book_id, _ = _write_book(tmp_path, monkeypatch)
+    result = asyncio.run(distill_book(book_id, use_fake=True))
+    result.quality_report = result.quality_report.model_copy(
+        update={"status": QualityStatus.FAIL, "blocking_issues": ["未解析图片"]}
+    )
+
+    assert _completion_status(result) == "quality_failed"

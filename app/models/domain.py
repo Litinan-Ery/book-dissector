@@ -228,6 +228,7 @@ class KnowledgeUnit(VersionedModel):
     anchors: list[SourceAnchor] = Field(default_factory=list)
     verification_status: VerificationStatus = VerificationStatus.UNVERIFIED
     duplicate_of: str | None = None
+    origin_unit_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def verified_knowledge_requires_anchor(self) -> KnowledgeUnit:

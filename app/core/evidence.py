@@ -151,6 +151,7 @@ def resolve_model_response(
                     if anchors
                     else VerificationStatus.UNVERIFIED
                 ),
+                origin_unit_ids=[unit.unit_id],
             )
         )
 

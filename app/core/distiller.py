@@ -14,15 +14,19 @@ from ..models.domain import (
     DistillUnit,
     KnowledgeKind,
     KnowledgeUnit,
+    QualityReport,
+    QualityStatus,
     SpanMapEntry,
     UnitCoverageReport,
     VerificationStatus,
 )
 from .evidence import EvidenceValidationError, distill_with_validation
+from .dedup import merge_knowledge_units
 from .extractors.base import Chapter
 from .quality import validate_structure
 from .spanmap import build_span_map, validate_span_map
 from .units import build_distill_units, validate_unit_coverage
+from .quality_gate import evaluate_quality
 
 MAX_CHUNK_CHARS = 12000
 OVERLAP_CHARS = 500
@@ -61,6 +65,16 @@ class DistillResult:
     chapters: list[ChapterDistill] = field(default_factory=list)
     distill_units: list[DistillUnit] = field(default_factory=list)
     knowledge_units: list[KnowledgeUnit] = field(default_factory=list)
+    merged_text: str = ""
+    duplicate_merged_count: int = 0
+    quality_report: QualityReport = field(
+        default_factory=lambda: QualityReport(
+            status=QualityStatus.FAIL,
+            body_coverage=0.0,
+            anchor_coverage=0.0,
+            blocking_issues=["尚未执行质量校验"],
+        )
+    )
     unit_coverage: UnitCoverageReport = field(
         default_factory=lambda: UnitCoverageReport(coverage=0.0)
     )
@@ -84,6 +98,8 @@ class DistillResult:
 
     @property
     def final_text(self) -> str:
+        if self.merged_text.strip():
+            return self.merged_text.strip()
         return "\n\n".join(
             chapter.text.strip() for chapter in self.chapters if chapter.text.strip()
         )
@@ -332,7 +348,20 @@ async def distill_book(
             )
 
     result.total_output_chars = len(result.final_text)
+    deduplicated = merge_knowledge_units(result.knowledge_units)
+    result.knowledge_units = deduplicated.units
+    result.duplicate_merged_count = deduplicated.merged_count
+    result.merged_text = _render_knowledge("全书知识精华", result.knowledge_units)
+    result.quality_report = evaluate_quality(
+        structure=pruned_structure,
+        span_map=mapping_report,
+        unit_coverage=coverage,
+        knowledge_units=result.knowledge_units,
+        modality_warnings=list(meta.get("modality_warnings", [])),
+        processing_errors=result.errors,
+        duplicate_merged_count=result.duplicate_merged_count,
+    )
+    result.total_output_chars = len(result.final_text)
     if progress:
         progress("完成", len(units), len(units))
     return result
-
