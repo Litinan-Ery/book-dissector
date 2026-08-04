@@ -10,6 +10,7 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from ..models.domain import RunManifest
+from .atomic import atomic_write_text
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -55,6 +56,15 @@ class ArtifactStore:
         path = self.run_dir(run_id).joinpath(*relative.parts)
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def write_text(self, run_id: str, relative_path: str, content: str) -> Path:
+        run_dir = self.run_dir(run_id)
+        if not run_dir.is_dir():
+            raise FileNotFoundError(f"run does not exist: {run_id}")
+        relative = self._validate_relative_path(relative_path)
+        destination = run_dir.joinpath(*relative.parts)
+        atomic_write_text(destination, content)
+        return destination
+
     def read_model(
         self, run_id: str, relative_path: str, model_type: type[ModelT]
     ) -> ModelT:
@@ -73,4 +83,3 @@ class ArtifactStore:
         finally:
             if temporary.exists():
                 temporary.unlink()
-

@@ -62,6 +62,11 @@ class TaskStatus(BaseModel):
     total: int = 0
     error: str = ""
     message: str = ""
+    book_id: str = ""
+    run_id: str = ""
+    estimate: dict = Field(default_factory=dict)
+    metrics: dict = Field(default_factory=dict)
+    result: dict = Field(default_factory=dict)
 
 
 class DisassembleRequest(BaseModel):
@@ -69,6 +74,11 @@ class DisassembleRequest(BaseModel):
 
     book_type: str = "general"   # general / fiction / technical
     strength: str = "standard"   # conservative / standard / aggressive
+    cloud_consent: bool = False
+
+
+class MoveTaskRequest(BaseModel):
+    before_task_id: str
 
 
 class ChapterDistillOut(BaseModel):
@@ -93,6 +103,12 @@ class DistillResultOut(BaseModel):
     total_source_chars: int
     total_output_chars: int
     api_calls: int
+    cache_hits: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    prompt_cache_hit_tokens: int = 0
+    prompt_cache_miss_tokens: int = 0
+    actual_cost_cny: float = 0.0
     errors: list[str]
     kept_ratio: float
     knowledge_units: list[KnowledgeUnit] = Field(default_factory=list)

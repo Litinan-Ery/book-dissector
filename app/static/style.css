@@ -1,167 +1,129 @@
-* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  color-scheme: light;
+  --ink: #17211b;
+  --muted: #66716a;
+  --line: #dbe2dc;
+  --paper: #fffefa;
+  --canvas: #f2f5ef;
+  --green: #166534;
+  --green-dark: #0f4b27;
+  --green-soft: #e8f3e9;
+  --amber: #9a5b08;
+  --red: #a83232;
+  --shadow: 0 16px 40px rgba(32, 54, 39, 0.08);
+}
+
+* { box-sizing: border-box; }
 body {
-  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: #f5f6f8;
-  color: #24292f;
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 24px 16px 48px;
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 90% 5%, rgba(148, 184, 155, 0.22), transparent 28rem),
+    var(--canvas);
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
-header { margin-bottom: 20px; }
-h1 { font-size: 26px; }
-.subtitle { color: #57606a; margin-top: 4px; }
-main { display: flex; flex-direction: column; gap: 16px; }
+
+.hero, main, footer { width: min(1120px, calc(100% - 32px)); margin-inline: auto; }
+.hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 24px;
+  padding: 52px 4px 28px;
+}
+.eyebrow { margin: 0 0 8px; color: var(--green); font-size: 11px; font-weight: 800; letter-spacing: 0.18em; }
+h1 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: clamp(34px, 6vw, 58px); letter-spacing: -0.04em; }
+.subtitle { margin: 10px 0 0; color: var(--muted); }
+.priority { padding: 8px 12px; border: 1px solid #9ebca4; border-radius: 999px; color: var(--green); background: var(--green-soft); font-size: 12px; font-weight: 700; }
+
+main { display: grid; gap: 18px; }
 .card {
+  padding: 22px;
+  border: 1px solid rgba(184, 197, 186, 0.9);
+  border-radius: 18px;
+  background: rgba(255, 254, 250, 0.94);
+  box-shadow: var(--shadow);
+}
+.focus-card { border-color: #8cad92; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.section-heading > div { display: flex; align-items: center; gap: 10px; }
+.section-heading h2 { margin: 0; font-size: 18px; }
+.section-heading p { margin: 0; color: var(--muted); font-size: 12px; }
+.step { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: #fff; background: var(--green); font-size: 11px; font-weight: 800; }
+
+.row { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+label { display: grid; gap: 6px; color: #465048; font-size: 12px; font-weight: 650; }
+input[type="password"], input[type="file"], select {
+  min-height: 40px;
+  padding: 8px 11px;
+  border: 1px solid #c9d3ca;
+  border-radius: 10px;
   background: #fff;
-  border: 1px solid #d0d7de;
-  border-radius: 8px;
-  padding: 16px 20px;
+  color: var(--ink);
 }
-.card h2 { font-size: 16px; margin-bottom: 12px; }
-.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-input[type="password"], input[type="file"] {
-  flex: 1;
-  min-width: 200px;
-  padding: 6px 10px;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-}
+input[type="password"], input[type="file"] { flex: 1; min-width: 220px; }
 button {
-  padding: 6px 14px;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  background: #f6f8fa;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid #c4cfc5;
+  border-radius: 10px;
+  color: #253129;
+  background: #f8faf7;
   cursor: pointer;
+  font-weight: 700;
 }
-button.primary { background: #0969da; color: #fff; border-color: #0969da; }
-button.danger { background: #cf222e; color: #fff; border-color: #cf222e; }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-.hint { color: #57606a; font-size: 12px; margin-top: 8px; }
-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
-th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #eaeef2; }
-footer { margin-top: 24px; text-align: center; }
-HTML
-cat > app/static/app.js <<'JS'
-"use strict";
+button:hover { border-color: #86a28c; background: #f0f6f0; }
+button.primary { border-color: var(--green); color: #fff; background: var(--green); }
+button.primary:hover { background: var(--green-dark); }
+button.danger { color: var(--red); }
+button.ghost { background: transparent; }
+button.compact { min-height: 32px; padding: 5px 10px; font-size: 12px; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+.hint { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 
-const $ = (sel) => document.querySelector(sel);
+.table-wrap { overflow-x: auto; }
+table { width: 100%; margin-top: 14px; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 11px 8px; border-bottom: 1px solid #e5eae5; text-align: left; vertical-align: middle; }
+th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.book-title { font-weight: 750; }
+.book-meta { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
 
-/* ---------- 设置区 ---------- */
-async function loadSettings() {
-  try {
-    const res = await fetch("/api/settings");
-    const data = await res.json();
-    const configured = data.deepseek_api_key_configured;
-    $("#settings-status").textContent = configured
-      ? `已配置密钥 · 模型：${data.deepseek_model}`
-      : "尚未配置密钥（模型：" + data.deepseek_model + "）";
-  } catch (err) {
-    $("#settings-status").textContent = "读取设置失败：" + err.message;
-  }
-}
+.task-list { display: grid; gap: 10px; }
+.task-empty { padding: 18px; border: 1px dashed #cbd5cc; border-radius: 12px; color: var(--muted); text-align: center; }
+.task-item { display: grid; grid-template-columns: minmax(150px, 1.4fr) minmax(150px, 2fr) auto; gap: 14px; align-items: center; padding: 14px; border: 1px solid #e0e7e1; border-radius: 12px; background: #fbfcf9; }
+.task-name { font-size: 12px; font-weight: 800; }
+.task-detail { color: var(--muted); font-size: 11px; }
+.task-progress { display: grid; gap: 6px; }
+.task-progress progress { width: 100%; }
+.status { display: inline-flex; width: fit-content; padding: 3px 8px; border-radius: 999px; color: var(--green); background: var(--green-soft); font-size: 10px; font-weight: 800; }
+.status.fail { color: var(--red); background: #fae9e7; }
+.status.wait { color: var(--amber); background: #fff1d8; }
 
-$("#settings-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const key = $("#api-key").value.trim();
-  const res = await fetch("/api/settings", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ deepseek_api_key: key }),
-  });
-  if (res.ok) {
-    $("#api-key").value = "";
-    $("#settings-status").textContent = "已保存。";
-    loadSettings();
-  } else {
-    $("#settings-status").textContent = "保存失败。";
-  }
-});
-
-$("#btn-test").addEventListener("click", async () => {
-  $("#settings-status").textContent = "测试中…";
-  const res = await fetch("/api/settings/test", { method: "POST" });
-  const data = await res.json();
-  $("#settings-status").textContent = data.message;
-});
-
-$("#btn-clear").addEventListener("click", async () => {
-  await fetch("/api/settings", { method: "DELETE" });
-  $("#settings-status").textContent = "已清除密钥。";
-});
-
-/* ---------- 书库区 ---------- */
-async function refreshBooks() {
-  const res = await fetch("/api/books");
-  const books = await res.json();
-  const body = $("#book-body");
-  body.innerHTML = "";
-  if (books.length === 0) {
-    body.innerHTML = '<tr><td colspan="4" class="hint">暂无书籍，请上传。</td></tr>';
-    return;
-  }
-  for (const b of books) {
-    const tr = document.createElement("tr");
-    const size = b.size_bytes > 1024 * 1024
-      ? (b.size_bytes / 1024 / 1024).toFixed(1) + " MB"
-      : Math.max(1, Math.round(b.size_bytes / 1024)) + " KB";
-    const time = new Date(b.uploaded_at).toLocaleString("zh-CN");
-    tr.innerHTML =
-      `<td>${b.filename}</td><td>${size}</td><td>${time}</td>` +
-      `<td><button class="btn-disassemble" data-id="${b.id}">拆解</button></td>`;
-    tr.querySelector(".btn-disassemble").addEventListener("click", () => {
-      alert("拆解流水线将在 M3/M4 里程碑实现（book_id=" + b.id + "）");
-    });
-    body.appendChild(tr);
-  }
-}
-
-async function uploadBooks(files) {
-  const status = $("#upload-status");
-  for (const file of files) {
-    status.textContent = "上传中：" + file.name;
-    const fd = new FormData();
-    fd.append("file", file);
-    const res = await fetch("/api/books/upload", { method: "POST", body: fd });
-    if (!res.ok) {
-      const err = await res.json();
-      status.textContent = file.name + " 上传失败：" + (err.detail || res.status);
-    }
-  }
-  status.textContent = "上传完成。";
-  refreshBooks();
-}
-
-$("#btn-upload").addEventListener("click", () => {
-  const files = $("#file-input").files;
-  if (files.length > 0) uploadBooks(files);
-});
-
-/* ---------- 初始化 ---------- */
-loadSettings();
-refreshBooks();
-JS
-echo "frontend written" && ls -la app/static/
-.split { display: flex; gap: 12px; margin-top: 8px; }
-.split > div { flex: 1; min-width: 0; }
-.preview {
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: #f6f8fa;
-  border: 1px solid #d0d7de;
-  border-radius: 6px;
-  padding: 10px;
-  max-height: 320px;
-  overflow-y: auto;
-  font-size: 13px;
-  line-height: 1.6;
-}
-#prune-regions { list-style: none; margin: 8px 0; }
-#prune-regions li {
-  display: flex; gap: 8px; align-items: center;
-  padding: 6px 8px; border-bottom: 1px solid #eaeef2; font-size: 13px;
-}
-.region-reason {
-  font-size: 11px; padding: 1px 6px; border-radius: 10px;
-  background: #fff8c5; color: #6b5900; white-space: nowrap;
-}
+.estimate-box { margin: 16px 0; padding: 14px; border-left: 4px solid var(--green); border-radius: 8px; background: var(--green-soft); font-size: 13px; line-height: 1.65; }
+.consent { display: flex; grid-template-columns: auto 1fr; align-items: start; gap: 10px; padding: 12px; border: 1px solid #d8e2d9; border-radius: 10px; font-weight: 500; line-height: 1.55; }
+.actions { margin-top: 14px; }
+.quality-summary { margin-top: 14px; padding: 14px; border-radius: 10px; background: #f6f8f5; font-size: 13px; line-height: 1.65; }
+.quality-summary.fail { color: #7b2525; background: #fff0ee; }
+.preview { max-height: 420px; overflow: auto; margin-top: 14px; padding: 14px; border: 1px solid #dce3dd; border-radius: 10px; background: #f7f9f6; white-space: pre-wrap; word-break: break-word; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.split h3 { margin: 12px 0 0; font-size: 13px; }
+#prune-regions { display: grid; gap: 8px; margin: 12px 0; padding: 0; list-style: none; }
+#prune-regions li { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid #e1e7e1; border-radius: 9px; font-size: 12px; }
+.region-reason { color: var(--amber); font-weight: 800; }
 .region-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+progress { accent-color: var(--green); }
+footer { padding: 30px 4px 42px; color: var(--muted); font-size: 11px; text-align: center; }
+
+@media (max-width: 760px) {
+  .hero { align-items: start; padding-top: 34px; }
+  .priority { display: none; }
+  .card { padding: 17px; border-radius: 14px; }
+  .section-heading { align-items: start; }
+  .section-heading > p { display: none; }
+  .task-item { grid-template-columns: 1fr; }
+  .split { grid-template-columns: 1fr; }
+  button { width: 100%; }
+  .row label { width: 100%; }
+  select { width: 100%; }
+}

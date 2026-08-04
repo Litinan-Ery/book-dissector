@@ -8,7 +8,9 @@ import pytest
 from app import config
 from app.api.tasks import _completion_status, _persist, _to_out
 from app.core.distiller import QualityGateError, distill_book
+from app.core.execution import DistillCancelled, TaskExecutionContext
 from app.core.spanmap import build_span_map
+from app.core.task_store import TaskStore
 from app.models.domain import QualityStatus
 
 
@@ -133,3 +135,58 @@ def test_quality_failure_is_not_reported_as_done(tmp_path: Path, monkeypatch) ->
     )
 
     assert _completion_status(result) == "quality_failed"
+
+
+def test_second_identical_run_reuses_unit_cache_without_api_calls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    book_id, _ = _write_book(tmp_path, monkeypatch)
+    store = TaskStore(tmp_path / "tasks.db")
+    first_task = store.create_task(book_id, "general", "standard")
+    common = {
+        "store": store,
+        "source_fingerprint": hashlib.sha256(
+            (config.BOOKS_DIR / f"{book_id}.txt").read_bytes()
+        ).hexdigest(),
+        "prune_config_hash": "p" * 64,
+        "book_type": "general",
+        "strength": "standard",
+        "model": config.DEEPSEEK_MODEL,
+        "prompt_version": "1.0",
+    }
+    first_context = TaskExecutionContext(task_id=first_task.task_id, **common)
+    first = asyncio.run(
+        distill_book(book_id, use_fake=True, execution=first_context)
+    )
+    second_task = store.create_task(book_id, "general", "standard")
+    second_context = TaskExecutionContext(task_id=second_task.task_id, **common)
+    second = asyncio.run(
+        distill_book(book_id, use_fake=True, execution=second_context)
+    )
+
+    assert first.api_calls == len(first.distill_units)
+    assert second.api_calls == 0
+    assert second.cache_hits == len(second.distill_units)
+    assert second.final_text == first.final_text
+
+
+def test_cancelled_task_stops_before_first_model_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    book_id, _ = _write_book(tmp_path, monkeypatch)
+    store = TaskStore(tmp_path / "tasks.db")
+    task = store.create_task(book_id, "general", "standard")
+    store.request_cancel(task.task_id)
+    context = TaskExecutionContext(
+        store=store,
+        task_id=task.task_id,
+        source_fingerprint="f" * 64,
+        prune_config_hash="p" * 64,
+        book_type="general",
+        strength="standard",
+        model=config.DEEPSEEK_MODEL,
+        prompt_version="1.0",
+    )
+
+    with pytest.raises(DistillCancelled):
+        asyncio.run(distill_book(book_id, use_fake=True, execution=context))

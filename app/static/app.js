@@ -1,375 +1,178 @@
 "use strict";
 
-const $ = (sel) => document.querySelector(sel);
+const $ = (selector) => document.querySelector(selector);
+const reasonNames = { copyright: "版权页", toc: "目录", duplicate: "重复副本", frontmatter: "元信息" };
+let currentBook = null;
+let currentTaskId = null;
+let currentPrune = null;
+let pollTimer = null;
 
-/* ---------- 设置区 ---------- */
+function clear(node) { node.replaceChildren(); }
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  if (className) node.className = className;
+  return node;
+}
+function formatSize(bytes) {
+  return bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+function formatSeconds(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)} 秒`;
+  return `${Math.floor(seconds / 60)} 分 ${Math.round(seconds % 60)} 秒`;
+}
+async function jsonOrError(response) {
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+  return data;
+}
+
 async function loadSettings() {
   try {
-    const res = await fetch("/api/settings");
-    const data = await res.json();
-    const configured = data.deepseek_api_key_configured;
-    $("#settings-status").textContent = configured
-      ? "已配置密钥 · 模型：" + data.deepseek_model
-      : "尚未配置密钥（模型：" + data.deepseek_model + "）";
-  } catch (err) {
-    $("#settings-status").textContent = "读取设置失败：" + err.message;
-  }
+    const data = await jsonOrError(await fetch("/api/settings"));
+    $("#settings-status").textContent = data.deepseek_api_key_configured
+      ? `已配置密钥 · 模型：${data.deepseek_model}`
+      : `尚未配置密钥（模型：${data.deepseek_model}）`;
+  } catch (error) { $("#settings-status").textContent = `读取设置失败：${error.message}`; }
 }
 
-$("#settings-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const key = $("#api-key").value.trim();
-  const res = await fetch("/api/settings", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ deepseek_api_key: key }),
-  });
-  if (res.ok) {
+$("#settings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await jsonOrError(await fetch("/api/settings", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deepseek_api_key: $("#api-key").value.trim() }),
+    }));
     $("#api-key").value = "";
-    $("#settings-status").textContent = "已保存。";
     loadSettings();
-  } else {
-    $("#settings-status").textContent = "保存失败。";
-  }
+  } catch (error) { $("#settings-status").textContent = `保存失败：${error.message}`; }
 });
-
 $("#btn-test").addEventListener("click", async () => {
-  // 若输入框有未保存的新密钥，先保存再测试，避免误测旧值
-  const newKey = $("#api-key").value.trim();
-  if (newKey) {
-    const saveRes = await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ deepseek_api_key: newKey }),
-    });
-    if (!saveRes.ok) {
-      $("#settings-status").textContent = "保存失败，无法测试。";
-      return;
-    }
-    $("#api-key").value = "";
-  }
   $("#settings-status").textContent = "测试中…";
-  const res = await fetch("/api/settings/test", { method: "POST" });
-  const data = await res.json();
-  $("#settings-status").textContent = data.message;
+  try { $("#settings-status").textContent = (await jsonOrError(await fetch("/api/settings/test", { method: "POST" }))).message; }
+  catch (error) { $("#settings-status").textContent = `连接失败：${error.message}`; }
 });
+$("#btn-clear").addEventListener("click", async () => { await fetch("/api/settings", { method: "DELETE" }); loadSettings(); });
 
-$("#btn-clear").addEventListener("click", async () => {
-  await fetch("/api/settings", { method: "DELETE" });
-  $("#settings-status").textContent = "已清除密钥。";
-});
-
-/* ---------- 书库区 ---------- */
-async function refreshBooks() {
-  const res = await fetch("/api/books");
-  const books = await res.json();
-  const body = $("#book-body");
-  body.innerHTML = "";
-  if (books.length === 0) {
-    body.innerHTML = '<tr><td colspan="4" class="hint">暂无书籍，请上传。</td></tr>';
-    return;
-  }
-  for (const b of books) {
-    const tr = document.createElement("tr");
-    const size = b.size_bytes > 1024 * 1024
-      ? (b.size_bytes / 1024 / 1024).toFixed(1) + " MB"
-      : Math.max(1, Math.round(b.size_bytes / 1024)) + " KB";
-    const time = new Date(b.uploaded_at).toLocaleString("zh-CN");
-    const statusText = statusLabel(b);
-    tr.innerHTML =
-      "<td>" + (b.title || "-") + "</td>" +
-      "<td>" + (b.author || "-") + "</td>" +
-      "<td>" + (b.source_format || "-") + "</td>" +
-      "<td>" + (b.word_count ? b.word_count.toLocaleString() : "-") + "</td>" +
-      "<td>" + statusText + "</td>" +
-      "<td>" + b.filename + "</td><td>" + size + "</td><td>" + time + "</td>" +
-      '<td>' +
-      '<button class="btn-prune" data-id="' + b.id + '" ' +
-      (b.extract_status === "ok" ? "" : "disabled ") + '>删减</button> ' +
-      '<button class="btn-disassemble" data-id="' + b.id + '" ' +
-      (b.extract_status === "ok" ? "" : "disabled ") + '>拆解</button></td>';
-    tr.querySelector(".btn-prune").addEventListener("click", () => {
-      openPrune(b.id, b.filename);
-    });
-    tr.querySelector(".btn-disassemble").addEventListener("click", () => {
-      openDistill(b.id, b.filename);
-    });
-    body.appendChild(tr);
-  }
+function bookStatus(book) {
+  if (book.extract_status === "ok") return "已提取";
+  if (book.extract_status === "error") return `失败：${book.extract_error || "未知错误"}`;
+  if (book.extract_status === "processing") return "提取中…";
+  return "等待中";
 }
 
-function statusLabel(b) {
-  switch (b.extract_status) {
-    case "ok": return "已提取";
-    case "error": return "失败：" + (b.extract_error || "未知错误");
-    case "processing": return "提取中…";
-    default: return "等待中";
+async function refreshBooks() {
+  const books = await jsonOrError(await fetch("/api/books"));
+  const body = $("#book-body");
+  clear(body);
+  if (!books.length) {
+    const row = el("tr"); const cell = el("td", "暂无书籍，请先上传。", "hint"); cell.colSpan = 5; row.append(cell); body.append(row); return;
+  }
+  for (const book of books) {
+    const row = el("tr");
+    const name = el("td"); name.append(el("span", book.title || book.filename, "book-title"), el("span", `${book.author || "未知作者"} · ${book.filename} · ${formatSize(book.size_bytes)}`, "book-meta"));
+    row.append(name, el("td", book.source_format || "-"), el("td", book.word_count ? book.word_count.toLocaleString() : "-"), el("td", bookStatus(book)));
+    const actions = el("td");
+    const start = el("button", "一键拆解", "primary compact"); start.disabled = book.extract_status !== "ok"; start.addEventListener("click", () => openDistill(book)); actions.append(start); row.append(actions); body.append(row);
   }
 }
 
 function uploadOne(file) {
   return new Promise((resolve) => {
-    const xhr = new XMLHttpRequest();
-    const fd = new FormData();
-    fd.append("file", file);
-    $("#upload-progress-wrap").hidden = false;
-    $("#upload-progress").value = 0;
-    $("#upload-progress-text").textContent = "0%";
-    xhr.open("POST", "/api/books/upload");
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100);
-        $("#upload-progress").value = pct;
-        $("#upload-progress-text").textContent = pct + "%";
-      }
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve({ ok: true });
-      else {
-        let detail = "HTTP " + xhr.status;
-        try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (_) {}
-        resolve({ ok: false, detail });
-      }
-    };
-    xhr.onerror = () => resolve({ ok: false, detail: "网络错误（服务可能正在重启，请重试）" });
-    xhr.send(fd);
+    const request = new XMLHttpRequest(); const data = new FormData(); data.append("file", file);
+    $("#upload-progress-wrap").hidden = false; request.open("POST", "/api/books/upload");
+    request.upload.onprogress = (event) => { if (event.lengthComputable) { const percent = Math.round(event.loaded / event.total * 100); $("#upload-progress").value = percent; $("#upload-progress-text").textContent = `${percent}%`; } };
+    request.onload = () => resolve(request.status >= 200 && request.status < 300 ? null : `HTTP ${request.status}`);
+    request.onerror = () => resolve("网络错误"); request.send(data);
   });
 }
-
-async function uploadBooks(files) {
-  const status = $("#upload-status");
-  for (const file of files) {
-    status.textContent = "上传中：" + file.name;
-    const r = await uploadOne(file);
-    if (!r.ok) {
-      status.textContent = file.name + " 上传失败：" + (r.detail || "未知错误");
-      $("#upload-progress-wrap").hidden = true;
-      return;
-    }
+$("#btn-upload").addEventListener("click", async () => {
+  for (const file of $("#file-input").files) {
+    $("#upload-status").textContent = `上传中：${file.name}`;
+    const error = await uploadOne(file); if (error) { $("#upload-status").textContent = `${file.name} 上传失败：${error}`; return; }
   }
-  $("#upload-progress-wrap").hidden = true;
-  status.textContent = "上传完成，正在后台提取文本…（大书可能需要十几秒）";
-  refreshBooks();
-}
-
-$("#btn-upload").addEventListener("click", () => {
-  const files = $("#file-input").files;
-  if (files.length > 0) uploadBooks(files);
+  $("#upload-progress-wrap").hidden = true; $("#upload-status").textContent = "上传完成，正在提取文本…"; refreshBooks();
 });
 
-/* ---------- 删减预览 ---------- */
-let currentPrune = null; // { bookId, filename, result, restored:[[s,e],...] }
-
-const reasonNames = {
-  copyright: "版权页",
-  toc: "目录",
-  backmatter: "书末部分",
-  duplicate: "重复段",
-};
-
-async function openPrune(bookId, filename) {
-  $("#prune-panel").hidden = false;
-  $("#prune-title").textContent = "删减预览：" + filename;
-  $("#prune-stats").textContent = "执行删减中…";
-  const res = await fetch("/api/books/" + bookId + "/prune", { method: "POST" });
-  if (!res.ok) {
-    const err = await res.json();
-    $("#prune-stats").textContent = "删减失败：" + (err.detail || res.status);
-    return;
-  }
-  currentPrune = { bookId, filename, result: await res.json(), restored: [] };
-  renderPrune();
-}
-
-function renderPrune() {
-  const r = currentPrune.result;
-  $("#prune-stats").textContent =
-    "原文字数 " + r.original_chars.toLocaleString() +
-    " → 删减后 " + (r.original_chars - r.removed_chars).toLocaleString() +
-    "（保留 " + Math.round(r.kept_ratio * 100) + "%），删除 " + r.regions.length + " 处";
-  $("#prune-result").textContent = r.pruned_text.slice(0, 6000) +
-    (r.pruned_text.length > 6000 ? "\n…（预览截断，完整稿已保存）" : "");
-
-  // 原文片段：展示前 1200 字符 + 删除标记
-  const orig = currentPrune.originalText ? currentPrune.originalText : fetchOriginal();
-  const list = $("#prune-regions");
-  list.innerHTML = "";
-  if (r.regions.length === 0) {
-    list.innerHTML = "<li>未识别到需要删除的内容。</li>";
-  }
-  for (const reg of r.regions) {
-    const li = document.createElement("li");
-    const reason = reasonNames[reg.reason] || reg.reason;
-    li.innerHTML =
-      '<span class="region-reason">' + reason + "</span>" +
-      '<span class="region-label" title="' + (reg.label || "") + '">' +
-      (reg.label || "(无摘要)") + "</span>" +
-      "<span>" + (reg.end - reg.start).toLocaleString() + " 字</span>";
-    const btn = document.createElement("button");
-    btn.textContent = "恢复";
-    btn.addEventListener("click", async () => {
-      currentPrune.restored.push([reg.start, reg.end]);
-      await applyRestore();
-    });
-    li.appendChild(btn);
-    list.appendChild(li);
-  }
-}
-
-async function fetchOriginal() {
+async function loadEstimate() {
+  if (!currentBook) return;
+  const params = new URLSearchParams({ book_type: $("#distill-type").value, strength: $("#distill-strength").value });
+  $("#estimate-box").textContent = "正在计算时间、调用量与费用区间…";
   try {
-    const res = await fetch("/api/books/" + currentPrune.bookId + "/prune/original");
-    if (res.ok) {
-      currentPrune.originalText = await res.text();
-    } else {
-      currentPrune.originalText = "（无法获取原文）";
-    }
-  } catch (_) {
-    currentPrune.originalText = "（无法获取原文）";
-  }
-  $("#prune-original").textContent = currentPrune.originalText.slice(0, 2000);
-  return currentPrune.originalText;
+    const estimate = await jsonOrError(await fetch(`/api/books/${currentBook.id}/estimate?${params}`));
+    $("#estimate-box").textContent = `预计 ${estimate.api_calls} 次模型调用 · 输入约 ${estimate.input_tokens.toLocaleString()} tokens · 输出约 ${estimate.output_tokens.toLocaleString()} tokens · ${formatSeconds(estimate.time_seconds_low)}–${formatSeconds(estimate.time_seconds_high)} · 约 ¥${estimate.cost_cny_low.toFixed(4)}–¥${estimate.cost_cny_high.toFixed(4)}`;
+  } catch (error) { $("#estimate-box").textContent = `估算失败：${error.message}`; }
 }
-
-async function applyRestore() {
-  const res = await fetch("/api/books/" + currentPrune.bookId + "/prune/restore", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ regions: currentPrune.restored }),
-  });
-  if (!res.ok) {
-    const err = await res.json();
-    alert("恢复失败：" + (err.detail || res.status));
-    return;
-  }
-  currentPrune.result = await res.json();
-  renderPrune();
+async function openDistill(book) {
+  currentBook = book; currentTaskId = null; $("#distill-panel").hidden = false; $("#distill-title").textContent = `一键拆解：${book.title || book.filename}`;
+  $("#distill-progress").textContent = "确认配置与云端数据范围后即可开始。"; $("#distill-result").hidden = true; $("#quality-summary").hidden = true; $("#export-actions").hidden = true; $("#cloud-consent").checked = false; await loadEstimate(); $("#distill-panel").scrollIntoView({ behavior: "smooth" });
 }
-
-$("#btn-close-prune").addEventListener("click", () => {
-  $("#prune-panel").hidden = true;
-});
-
-/* ---------- 拆解面板（M4 蒸馏） ---------- */
-let currentDistill = null; // { bookId, filename, timer }
-
-function openDistill(bookId, filename) {
-  currentDistill = { bookId, filename, timer: null };
-  $("#distill-panel").hidden = false;
-  $("#distill-title").textContent = "拆解：" + filename;
-  $("#distill-progress").textContent = "选择书籍类型与压缩强度，点击开始拆解。";
-  $("#distill-result").hidden = true;
-  $("#distill-result").textContent = "";
-  $("#distill-stats").textContent = "";
-}
-
+$("#distill-type").addEventListener("change", loadEstimate); $("#distill-strength").addEventListener("change", loadEstimate);
 $("#btn-start-distill").addEventListener("click", async () => {
-  if (!currentDistill) return;
-  const btn = $("#btn-start-distill");
-  btn.disabled = true;
-  $("#distill-progress").textContent = "任务创建中…";
-  const res = await fetch("/api/books/" + currentDistill.bookId + "/disassemble", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      book_type: $("#distill-type").value,
-      strength: $("#distill-strength").value,
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json();
-    $("#distill-progress").textContent = "启动失败：" + (err.detail || res.status);
-    btn.disabled = false;
-    return;
-  }
-  pollDistill();
+  if (!currentBook) return;
+  const button = $("#btn-start-distill"); button.disabled = true; $("#distill-progress").textContent = "正在创建端到端任务…";
+  try {
+    const task = await jsonOrError(await fetch(`/api/books/${currentBook.id}/disassemble`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ book_type: $("#distill-type").value, strength: $("#distill-strength").value, cloud_consent: $("#cloud-consent").checked }) }));
+    currentTaskId = task.task_id; refreshTasks(); pollCurrentTask();
+  } catch (error) { $("#distill-progress").textContent = `启动失败：${error.message}`; button.disabled = false; }
 });
 
-async function pollDistill() {
-  const res = await fetch("/api/tasks/" + currentDistill.bookId);
-  if (!res.ok) {
-    $("#distill-progress").textContent = "查询任务失败";
-    $("#btn-start-distill").disabled = false;
-    return;
-  }
-  const t = await res.json();
-  if (t.status === "running" || t.status === "pending") {
-    $("#distill-progress").textContent =
-      (t.current > 0 ? "进度 " + t.current + "/" + (t.total || "?") + "：" : "") + t.stage;
-    currentDistill.timer = setTimeout(pollDistill, 2000);
-    return;
-  }
+function statusClass(status) { return ["error", "quality_failed", "cancelled"].includes(status) ? "status fail" : ["pending", "running"].includes(status) ? "status wait" : "status"; }
+function statusLabel(status) { return ({ pending: "等待", running: "处理中", done: "完成", quality_failed: "质量未通过", error: "失败", cancelled: "已取消" })[status] || status; }
+async function taskAction(task, actionPath) { try { await jsonOrError(await fetch(`/api/tasks/${task.task_id}${actionPath}`, { method: "POST" })); refreshTasks(); } catch (error) { window.alert(error.message); } }
+function renderTask(task) {
+  const item = el("div", null, "task-item");
+  const identity = el("div"); identity.append(el("div", task.book_id, "task-name"), el("div", task.run_id || task.task_id, "task-detail"));
+  const middle = el("div", null, "task-progress"); middle.append(el("span", statusLabel(task.status), statusClass(task.status)));
+  const progress = el("progress"); progress.max = task.total || 1; progress.value = task.current || 0; middle.append(progress, el("span", task.message || task.stage || "等待处理", "task-detail"));
+  const actions = el("div", null, "row");
+  if (["pending", "running"].includes(task.status)) { const cancel = el("button", "取消", "compact"); cancel.addEventListener("click", () => taskAction(task, "/cancel")); actions.append(cancel); }
+  if (["cancelled", "error", "quality_failed"].includes(task.status)) { const resume = el("button", "继续", "compact"); resume.addEventListener("click", () => taskAction(task, "/resume")); actions.append(resume); }
+  if (["error", "quality_failed"].includes(task.status)) { const retry = el("button", "仅重试失败单元", "compact"); retry.addEventListener("click", () => taskAction(task, "/retry-failed")); actions.append(retry); }
+  item.append(identity, middle, actions); return item;
+}
+async function refreshTasks() {
+  try { const tasks = await jsonOrError(await fetch("/api/tasks")); const list = $("#task-list"); clear(list); if (!tasks.length) list.append(el("div", "暂无任务。上传书籍后点击“一键拆解”。", "task-empty")); else tasks.forEach((task) => list.append(renderTask(task))); }
+  catch (error) { $("#task-list").textContent = `任务列表读取失败：${error.message}`; }
+}
+$("#btn-refresh-tasks").addEventListener("click", refreshTasks);
+
+async function showTaskResult(task) {
+  const data = await jsonOrError(await fetch(`/api/tasks/${task.task_id}/result`));
+  $("#distill-result").hidden = false; $("#distill-result").textContent = data.final_text;
+  $("#distill-stats").textContent = `核心正文 ${data.total_source_chars.toLocaleString()} 字 → 知识正文 ${data.total_output_chars.toLocaleString()} 字 · API ${data.api_calls} 次 · 本地缓存 ${data.cache_hits} 次 · 实际费用约 ¥${data.actual_cost_cny.toFixed(4)}`;
+  const quality = data.quality_report; const summary = $("#quality-summary"); summary.hidden = false; summary.className = quality.status === "pass" ? "quality-summary" : "quality-summary fail";
+  const issues = quality.blocking_issues.length ? `；未解决：${quality.blocking_issues.join("；")}` : ""; summary.textContent = `质量 ${quality.status.toUpperCase()} · 正文覆盖 ${Math.round(quality.body_coverage * 100)}% · 锚点覆盖 ${Math.round(quality.anchor_coverage * 100)}% · 合并重复 ${quality.duplicate_merged_count} 条${issues}`;
+  $("#export-actions").hidden = false; $("#btn-do-export").hidden = quality.status !== "pass"; $("#btn-diagnostic-export").hidden = quality.status === "pass";
+}
+async function pollCurrentTask() {
+  if (!currentTaskId) return;
+  const task = await jsonOrError(await fetch(`/api/tasks/${currentTaskId}`));
+  $("#distill-progress").textContent = `${statusLabel(task.status)} · ${task.message || task.stage} ${task.total ? `(${task.current}/${task.total})` : ""}`; refreshTasks();
+  if (["pending", "running"].includes(task.status)) { pollTimer = window.setTimeout(pollCurrentTask, 1200); return; }
   $("#btn-start-distill").disabled = false;
-  if (t.status === "error") {
-    $("#distill-progress").textContent = "拆解失败：" + (t.error || "未知错误");
-    return;
-  }
-  // done：拉取结果
-  const r = await fetch("/api/tasks/" + currentDistill.bookId + "/result");
-  if (!r.ok) {
-    $("#distill-progress").textContent = "获取结果失败：" + r.status;
-    return;
-  }
-  const d = await r.json();
-  $("#distill-progress").textContent = "拆解完成（API 调用 " + d.api_calls + " 次）。";
-  $("#distill-result").hidden = false;
-  $("#distill-result").textContent = d.final_text;
-  $("#distill-stats").textContent =
-    "原文 " + d.total_source_chars.toLocaleString() + " 字 → 精华 " +
-    d.total_output_chars.toLocaleString() + " 字（保留 " +
-    Math.round(d.kept_ratio * 100) + "%）" +
-    (d.errors.length > 0 ? "；有 " + d.errors.length + " 处章节失败：" + d.errors.join("；") : "");
-  $("#export-actions").hidden = false;
-  $("#export-status").textContent = "";
+  if (["done", "quality_failed"].includes(task.status)) await showTaskResult(task);
 }
 
-$("#btn-preview-export").addEventListener("click", async () => {
-  const res = await fetch("/api/books/" + currentDistill.bookId + "/export/preview");
-  if (!res.ok) {
-    $("#export-status").textContent = "预览失败：" + res.status;
-    return;
-  }
-  $("#distill-result").textContent = await res.text();
-  $("#export-status").textContent = "（以上为将导出的完整内容预览）";
-});
+async function exportCurrent(diagnostic) {
+  if (!currentBook) return; const endpoint = diagnostic ? "export/diagnostic" : "export"; $("#export-status").textContent = "导出中…";
+  try { const data = await jsonOrError(await fetch(`/api/books/${currentBook.id}/${endpoint}`, { method: "POST" })); const link = el("a", `下载 ${data.filename}`); link.href = `/api/outputs/${encodeURIComponent(data.filename)}`; link.download = data.filename; const status = $("#export-status"); clear(status); status.append("已导出：", link); }
+  catch (error) { $("#export-status").textContent = `导出失败：${error.message}`; }
+}
+$("#btn-do-export").addEventListener("click", () => exportCurrent(false)); $("#btn-diagnostic-export").addEventListener("click", () => exportCurrent(true));
 
-$("#btn-do-export").addEventListener("click", async () => {
-  const btn = $("#btn-do-export");
-  btn.disabled = true;
-  $("#export-status").textContent = "导出中…";
-  const res = await fetch("/api/books/" + currentDistill.bookId + "/export", { method: "POST" });
-  btn.disabled = false;
-  if (!res.ok) {
-    const err = await res.json();
-    $("#export-status").textContent = "导出失败：" + (err.detail || res.status);
-    return;
-  }
-  const e = await res.json();
-  const size = e.size_bytes > 1024
-    ? (e.size_bytes / 1024).toFixed(1) + " KB"
-    : e.size_bytes + " B";
-  $("#export-status").innerHTML =
-    "已导出：" + e.filename + "（" + size + "） " +
-    '<a href="/api/outputs/' + encodeURIComponent(e.filename) + '" download>下载</a>';
-});
+async function openPrune() {
+  if (!currentBook) return; $("#prune-panel").hidden = false; $("#prune-title").textContent = `删减预览：${currentBook.title || currentBook.filename}`;
+  try { currentPrune = { bookId: currentBook.id, restored: [], result: await jsonOrError(await fetch(`/api/books/${currentBook.id}/prune`, { method: "POST" })) }; await renderPrune(); }
+  catch (error) { $("#prune-stats").textContent = `删减失败：${error.message}`; }
+}
+async function renderPrune() {
+  const result = currentPrune.result; $("#prune-stats").textContent = `原文 ${result.original_chars.toLocaleString()} 字 → 删减后 ${(result.original_chars - result.removed_chars).toLocaleString()} 字 · 映射校验 ${result.span_map_report.valid ? "通过" : "失败"}`;
+  $("#prune-result").textContent = result.pruned_text.slice(0, 6000); const original = await fetch(`/api/books/${currentPrune.bookId}/prune/original`); $("#prune-original").textContent = (await original.text()).slice(0, 6000);
+  const list = $("#prune-regions"); clear(list); if (!result.regions.length) list.append(el("li", "未识别到需要删除的内容。"));
+  for (const region of result.regions) { const row = el("li"); row.append(el("span", reasonNames[region.reason] || region.reason, "region-reason"), el("span", region.label || "无摘要", "region-label"), el("span", `${region.end - region.start} 字`)); const restore = el("button", "恢复", "compact"); restore.addEventListener("click", async () => { currentPrune.restored.push([region.start, region.end]); currentPrune.result = await jsonOrError(await fetch(`/api/books/${currentPrune.bookId}/prune/restore`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ regions: currentPrune.restored }) })); renderPrune(); }); row.append(restore); list.append(row); }
+}
+$("#btn-preview-prune").addEventListener("click", openPrune); $("#btn-close-prune").addEventListener("click", () => { $("#prune-panel").hidden = true; });
+$("#btn-close-distill").addEventListener("click", () => { if (pollTimer) window.clearTimeout(pollTimer); $("#distill-panel").hidden = true; });
 
-$("#btn-close-distill").addEventListener("click", () => {
-  if (currentDistill && currentDistill.timer) {
-    clearTimeout(currentDistill.timer);
-  }
-  $("#distill-panel").hidden = true;
-  $("#export-actions").hidden = true;
-});
-
-/* ---------- 初始化 ---------- */
-loadSettings();
-refreshBooks();
-setInterval(async () => {
-  try {
-    const res = await fetch("/api/books");
-    const books = await res.json();
-    if (books.some((b) => b.extract_status === "processing" || b.extract_status === "pending")) {
-      refreshBooks();
-    }
-  } catch (_) { /* 服务未就绪时忽略 */ }
-}, 2000);
+loadSettings(); refreshBooks(); refreshTasks(); window.setInterval(refreshTasks, 2500);

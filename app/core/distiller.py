@@ -29,6 +29,7 @@ from .quality import validate_structure
 from .spanmap import build_span_map, validate_span_map
 from .units import build_distill_units, validate_unit_coverage
 from .quality_gate import evaluate_quality
+from .execution import DistillCancelled, TaskExecutionContext
 from .budget import (
     STRENGTH_RATIOS,
     TYPE_FACTORS,
@@ -36,6 +37,9 @@ from .budget import (
     apply_budget_plan,
     scan_orientation,
 )
+from .async_utils import bounded_map
+from .retry import retry_async
+from .estimation import actual_cost_cny, estimate_text_tokens
 
 MAX_CHUNK_CHARS = 12000
 OVERLAP_CHARS = 500
@@ -47,6 +51,10 @@ ProgressCb = Callable[[str, int, int], None]
 
 class QualityGateError(RuntimeError):
     """模型调用之前的硬质量门禁失败。"""
+
+
+class TransientModelError(RuntimeError):
+    """限流、服务端错误或暂时网络故障，可安全重试。"""
 
 
 @dataclass
@@ -86,6 +94,11 @@ class DistillResult:
     total_source_chars: int = 0
     total_output_chars: int = 0
     api_calls: int = 0
+    cache_hits: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    prompt_cache_hit_tokens: int = 0
+    prompt_cache_miss_tokens: int = 0
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -107,6 +120,14 @@ class DistillResult:
             return self.merged_text.strip()
         return "\n\n".join(
             chapter.text.strip() for chapter in self.chapters if chapter.text.strip()
+        )
+
+    @property
+    def actual_cost_cny(self) -> float:
+        return actual_cost_cny(
+            cache_hit_tokens=self.prompt_cache_hit_tokens,
+            cache_miss_tokens=self.prompt_cache_miss_tokens,
+            output_tokens=self.output_tokens,
         )
 
 
@@ -133,6 +154,10 @@ async def _call_deepseek(
     system: str,
     user: str,
     api_key: str,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+    on_attempt: Callable[[], None] | None = None,
+    on_usage: Callable[[dict], None] | None = None,
 ) -> str:
     payload = {
         "model": config.DEEPSEEK_MODEL,
@@ -144,24 +169,42 @@ async def _call_deepseek(
         "max_tokens": 4096,
         "response_format": {"type": "json_object"},
     }
-    response = await client.post(
-        f"{config.DEEPSEEK_BASE_URL}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
+    async def request_once() -> str:
+        if on_attempt:
+            on_attempt()
+        response = await client.post(
+            f"{config.DEEPSEEK_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        if response.status_code == 401:
+            raise RuntimeError("API Key 无效（401），请在设置中重新填写")
+        if response.status_code == 429 or response.status_code in {408, 500, 502, 503, 504}:
+            raise TransientModelError(
+                f"DeepSeek 暂时不可用（HTTP {response.status_code}）"
+            )
+        if response.status_code != 200:
+            raise RuntimeError(f"DeepSeek API 错误（HTTP {response.status_code}）")
+        try:
+            data = response.json()
+            if on_usage:
+                on_usage(data.get("usage") or {})
+            return data["choices"][0]["message"]["content"].strip()
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("DeepSeek 响应格式异常（缺少 choices/message/content）") from exc
+
+    return await retry_async(
+        request_once,
+        should_retry=lambda error: isinstance(
+            error, (TransientModelError, httpx.TransportError)
+        ),
+        max_attempts=3,
+        base_delay=0.5,
+        before_attempt=cancel_check,
     )
-    if response.status_code == 401:
-        raise RuntimeError("API Key 无效（401），请在设置中重新填写")
-    if response.status_code == 429:
-        raise RuntimeError("请求过于频繁（429），请稍后重试")
-    if response.status_code != 200:
-        raise RuntimeError(f"DeepSeek API 错误（HTTP {response.status_code}）")
-    try:
-        return response.json()["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("DeepSeek 响应格式异常（缺少 choices/message/content）") from exc
 
 
 def _fake_response(unit: DistillUnit, original_text: str) -> str:
@@ -224,6 +267,8 @@ async def distill_book(
     strength: str = DEFAULT_STRENGTH,
     progress: ProgressCb | None = None,
     use_fake: bool | None = None,
+    execution: TaskExecutionContext | None = None,
+    max_concurrency: int = 3,
 ) -> DistillResult:
     if book_type not in TYPE_FACTORS:
         raise ValueError(f"未知书籍类型：{book_type}")
@@ -325,43 +370,109 @@ async def distill_book(
         total_source_chars=pruned_structure.body_end - pruned_structure.body_start,
     )
     system = _system_prompt(book_type)
+    completed_units = 0
     async with httpx.AsyncClient(timeout=180) as client:
-        for index, unit in enumerate(units):
+        async def process_unit(
+            indexed_unit: tuple[int, DistillUnit],
+        ) -> tuple[list[KnowledgeUnit], ChapterDistill, str]:
+            nonlocal completed_units
+            index, unit = indexed_unit
+            if execution:
+                execution.raise_if_cancelled()
             if progress:
                 progress(f"提炼并核验：{unit.title}", index, len(units))
 
             async def caller(prompt: str, current_unit: DistillUnit = unit) -> str:
-                result.api_calls += 1
+                if execution:
+                    execution.raise_if_cancelled()
                 if use_fake:
-                    return _fake_response(current_unit, original_text)
-                return await _call_deepseek(client, system, prompt, api_key)
+                    result.api_calls += 1
+                    response = _fake_response(current_unit, original_text)
+                    prompt_tokens = estimate_text_tokens(prompt)
+                    completion_tokens = estimate_text_tokens(response)
+                    result.input_tokens += prompt_tokens
+                    result.output_tokens += completion_tokens
+                    result.prompt_cache_miss_tokens += prompt_tokens
+                else:
+                    def record_attempt() -> None:
+                        result.api_calls += 1
+
+                    def record_usage(usage: dict) -> None:
+                        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                        completion_tokens = int(usage.get("completion_tokens") or 0)
+                        hit_tokens = int(usage.get("prompt_cache_hit_tokens") or 0)
+                        miss_tokens = int(
+                            usage.get("prompt_cache_miss_tokens")
+                            or max(0, prompt_tokens - hit_tokens)
+                        )
+                        result.input_tokens += prompt_tokens
+                        result.output_tokens += completion_tokens
+                        result.prompt_cache_hit_tokens += hit_tokens
+                        result.prompt_cache_miss_tokens += miss_tokens
+
+                    response = await _call_deepseek(
+                        client,
+                        system,
+                        prompt,
+                        api_key,
+                        cancel_check=(execution.raise_if_cancelled if execution else None),
+                        on_attempt=record_attempt,
+                        on_usage=record_usage,
+                    )
+                if execution:
+                    execution.raise_if_cancelled()
+                return response
 
             error = ""
             knowledge: list[KnowledgeUnit] = []
             try:
-                knowledge = await distill_with_validation(
-                    book_title=book_title,
-                    unit=unit,
-                    original_text=original_text,
-                    caller=caller,
-                    max_attempts=2,
-                )
-                result.knowledge_units.extend(knowledge)
+                cached = execution.load_cached(unit) if execution else None
+                if cached is not None:
+                    knowledge = cached
+                    result.cache_hits += 1
+                else:
+                    if execution:
+                        execution.start_unit(unit)
+                    knowledge = await distill_with_validation(
+                        book_title=book_title,
+                        unit=unit,
+                        original_text=original_text,
+                        caller=caller,
+                        max_attempts=2,
+                    )
+                    if execution:
+                        execution.complete_unit(unit, knowledge)
+            except DistillCancelled:
+                raise
             except (EvidenceValidationError, httpx.HTTPError, RuntimeError) as exc:
                 error = str(exc)
-                result.errors.append(f"{unit.title}：{exc}")
+                if execution:
+                    execution.fail_unit(unit, error)
             rendered = _render_knowledge(unit.title, knowledge)
-            result.chapters.append(
-                ChapterDistill(
-                    title=unit.title,
-                    source_chars=len(unit.input_text),
-                    target_chars=unit.target_chars,
-                    output_chars=len(rendered),
-                    text=rendered,
-                    error=error,
-                    unit_id=unit.unit_id,
-                )
+            chapter = ChapterDistill(
+                title=unit.title,
+                source_chars=len(unit.input_text),
+                target_chars=unit.target_chars,
+                output_chars=len(rendered),
+                text=rendered,
+                error=error,
+                unit_id=unit.unit_id,
             )
+            completed_units += 1
+            if progress:
+                progress(
+                    f"已核验：{unit.title}", completed_units, len(units)
+                )
+            return knowledge, chapter, error
+
+        outcomes = await bounded_map(
+            list(enumerate(units)), process_unit, limit=max_concurrency
+        )
+        for knowledge, chapter, error in outcomes:
+            result.knowledge_units.extend(knowledge)
+            result.chapters.append(chapter)
+            if error:
+                result.errors.append(f"{chapter.title}：{error}")
 
     result.total_output_chars = sum(
         len(unit.content) for unit in result.knowledge_units

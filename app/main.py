@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,10 +18,18 @@ from starlette.responses import Response
 from . import config
 from .api import books, export, prune, settings, tasks
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """启动后在 5 秒目标内恢复 SQLite 中断任务并重新入队。"""
+    tasks.recover_and_schedule()
+    yield
+
 app = FastAPI(
     title="图书拆解器",
     description="导入书籍 → 删减无关内容 → 压缩提炼 → 导出精华 MD",
-    version="0.1.0",
+    version="0.2.0",
+    lifespan=lifespan,
 )
 
 

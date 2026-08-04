@@ -16,6 +16,7 @@ BOOKS_DIR = STORAGE_DIR / "books"
 INTERMEDIATE_DIR = STORAGE_DIR / "intermediate"
 OUTPUT_DIR = STORAGE_DIR / "output"
 RUNS_DIR = STORAGE_DIR / "runs"
+TASK_DB = STORAGE_DIR / "tasks.db"
 CONFIG_FILE = PROJECT_ROOT / "config.json"
 
 # 本地 Web 服务参数
