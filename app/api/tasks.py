@@ -138,6 +138,7 @@ def _to_out(result) -> DistillResultOut:
                 target_chars=c.target_chars,
                 output_chars=c.output_chars,
                 error=c.error,
+                unit_id=c.unit_id,
             )
             for c in result.chapters
         ],
@@ -146,6 +147,9 @@ def _to_out(result) -> DistillResultOut:
         api_calls=result.api_calls,
         errors=result.errors,
         kept_ratio=kept,
+        knowledge_units=result.knowledge_units,
+        anchor_coverage=result.anchor_coverage,
+        unit_coverage=result.unit_coverage,
     )
 
 
@@ -164,6 +168,14 @@ def _persist(book_id: str, result) -> None:
                 "total_output_chars": result.total_output_chars,
                 "api_calls": result.api_calls,
                 "errors": result.errors,
+                "anchor_coverage": result.anchor_coverage,
+                "unit_coverage": result.unit_coverage.model_dump(mode="json"),
+                "distill_units": [
+                    unit.model_dump(mode="json") for unit in result.distill_units
+                ],
+                "knowledge_units": [
+                    unit.model_dump(mode="json") for unit in result.knowledge_units
+                ],
                 "chapters": [
                     {
                         "title": c.title,
@@ -171,6 +183,7 @@ def _persist(book_id: str, result) -> None:
                         "target_chars": c.target_chars,
                         "output_chars": c.output_chars,
                         "error": c.error,
+                        "unit_id": c.unit_id,
                     }
                     for c in result.chapters
                 ],

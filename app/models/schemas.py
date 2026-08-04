@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from .domain import SpanMapEntry, SpanMapReport
+from .domain import KnowledgeUnit, SpanMapEntry, SpanMapReport, UnitCoverageReport
 
 
 class BookInfo(BaseModel):
@@ -70,6 +70,7 @@ class ChapterDistillOut(BaseModel):
     target_chars: int
     output_chars: int
     error: str = ""
+    unit_id: str = ""
 
 
 class DistillResultOut(BaseModel):
@@ -85,6 +86,11 @@ class DistillResultOut(BaseModel):
     api_calls: int
     errors: list[str]
     kept_ratio: float
+    knowledge_units: list[KnowledgeUnit] = Field(default_factory=list)
+    anchor_coverage: float = 0.0
+    unit_coverage: UnitCoverageReport = Field(
+        default_factory=lambda: UnitCoverageReport(coverage=0.0)
+    )
 
 
 class PruneRegion(BaseModel):

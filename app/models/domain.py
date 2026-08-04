@@ -90,6 +90,12 @@ class SpanMapReport(VersionedModel):
     issues: list[str] = Field(default_factory=list)
 
 
+class UnitCoverageReport(VersionedModel):
+    coverage: float = Field(ge=0, le=1)
+    uncovered_ranges: list[CharacterRange] = Field(default_factory=list)
+    duplicate_ranges: list[CharacterRange] = Field(default_factory=list)
+
+
 class RunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -198,10 +204,21 @@ class SpanMapEntry(VersionedModel):
 class DistillUnit(VersionedModel):
     unit_id: str = Field(min_length=1, max_length=80)
     title: str
+    target_start: int = Field(ge=0)
+    target_end: int = Field(gt=0)
+    input_text: str = Field(min_length=1)
     source_spans: list[SourceSpan] = Field(min_length=1)
     input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_chars: int = Field(ge=1)
     status: str = "pending"
+
+    @model_validator(mode="after")
+    def validate_target_range(self) -> DistillUnit:
+        if self.target_end <= self.target_start:
+            raise ValueError("distill unit target range is empty")
+        if len(self.input_text) != self.target_end - self.target_start:
+            raise ValueError("distill unit text length does not match target range")
+        return self
 
 
 class KnowledgeUnit(VersionedModel):
