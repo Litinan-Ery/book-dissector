@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 from .domain import (
     KnowledgeUnit,
+    BudgetPlan,
+    OrientationScan,
     QualityReport,
     QualityStatus,
     SpanMapEntry,
@@ -107,6 +109,8 @@ class DistillResultOut(BaseModel):
             blocking_issues=["尚未执行质量校验"],
         )
     )
+    orientation_scan: OrientationScan | None = None
+    budget_plan: BudgetPlan | None = None
 
 
 class PruneRegion(BaseModel):

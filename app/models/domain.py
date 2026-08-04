@@ -246,6 +246,20 @@ class BudgetFactors(VersionedModel):
     evidence_value: float = Field(ge=0, le=1)
 
 
+class OrientationUnitScore(VersionedModel):
+    unit_id: str
+    role: str
+    factors: BudgetFactors
+    combined_score: float = Field(gt=0)
+    reason: str
+
+
+class OrientationScan(VersionedModel):
+    book_type: str
+    core_terms: list[str] = Field(default_factory=list)
+    scores: list[OrientationUnitScore] = Field(default_factory=list)
+
+
 class BudgetAllocation(VersionedModel):
     unit_id: str
     factors: BudgetFactors
@@ -269,6 +283,10 @@ class QualityReport(VersionedModel):
     duplicate_merged_count: int = Field(default=0, ge=0)
     warnings: list[str] = Field(default_factory=list)
     blocking_issues: list[str] = Field(default_factory=list)
+    target_kept_ratio: float = Field(default=0.0, ge=0)
+    actual_kept_ratio: float = Field(default=0.0, ge=0)
+    budget_within_tolerance: bool = True
+    budget_deviation_reason: str = ""
 
     @model_validator(mode="after")
     def pass_has_no_blockers(self) -> QualityReport:

@@ -86,6 +86,9 @@ def test_fake_distillation_produces_only_anchored_knowledge_units(
     assert result.knowledge_units
     assert result.anchor_coverage == 1.0
     assert result.unit_coverage.coverage == 1.0
+    assert result.orientation_scan is not None
+    assert result.budget_plan is not None
+    assert sum(unit.target_chars for unit in result.distill_units) == result.budget_plan.total_target_chars
     assert result.quality_report.status == QualityStatus.PASS
     assert _completion_status(result) == "done"
     assert result.api_calls == len(result.distill_units)
@@ -105,6 +108,8 @@ def test_fake_distillation_produces_only_anchored_knowledge_units(
     assert persisted["unit_coverage"]["coverage"] == 1.0
     assert persisted["knowledge_units"][0]["anchors"]
     assert persisted["distill_units"][0]["source_spans"]
+    assert persisted["orientation_scan"]["scores"]
+    assert persisted["budget_plan"]["allocations"]
     quality = json.loads(
         (config.INTERMEDIATE_DIR / f"{book_id}.quality.json").read_text(encoding="utf-8")
     )

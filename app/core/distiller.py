@@ -12,10 +12,12 @@ import httpx
 from .. import config
 from ..models.domain import (
     DistillUnit,
+    BudgetPlan,
     KnowledgeKind,
     KnowledgeUnit,
     QualityReport,
     QualityStatus,
+    OrientationScan,
     SpanMapEntry,
     UnitCoverageReport,
     VerificationStatus,
@@ -27,17 +29,18 @@ from .quality import validate_structure
 from .spanmap import build_span_map, validate_span_map
 from .units import build_distill_units, validate_unit_coverage
 from .quality_gate import evaluate_quality
+from .budget import (
+    STRENGTH_RATIOS,
+    TYPE_FACTORS,
+    allocate_budget,
+    apply_budget_plan,
+    scan_orientation,
+)
 
 MAX_CHUNK_CHARS = 12000
 OVERLAP_CHARS = 500
 
-STRENGTH_RATIOS = {
-    "conservative": 0.25,
-    "standard": 0.15,
-    "aggressive": 0.08,
-}
 DEFAULT_STRENGTH = "standard"
-TYPE_FACTORS = {"general": 1.0, "fiction": 0.7, "technical": 1.3}
 
 ProgressCb = Callable[[str, int, int], None]
 
@@ -65,6 +68,8 @@ class DistillResult:
     chapters: list[ChapterDistill] = field(default_factory=list)
     distill_units: list[DistillUnit] = field(default_factory=list)
     knowledge_units: list[KnowledgeUnit] = field(default_factory=list)
+    orientation_scan: OrientationScan | None = None
+    budget_plan: BudgetPlan | None = None
     merged_text: str = ""
     duplicate_merged_count: int = 0
     quality_report: QualityReport = field(
@@ -162,7 +167,7 @@ async def _call_deepseek(
 def _fake_response(unit: DistillUnit, original_text: str) -> str:
     span = unit.source_spans[0]
     source = original_text[span.start_char : span.end_char]
-    quote = source.strip()[: min(60, len(source.strip()))]
+    quote = source.strip()[: max(1, min(unit.target_chars, len(source.strip())))]
     if not quote:
         quote = source[:1]
     payload = {
@@ -170,7 +175,7 @@ def _fake_response(unit: DistillUnit, original_text: str) -> str:
         "items": [
             {
                 "kind": "source_claim",
-                "content": f"测试提炼：{quote}",
+                "content": quote,
                 "citations": [{"source_id": span.source_id, "quote": quote}],
             }
         ],
@@ -281,15 +286,24 @@ async def distill_book(
     source_fingerprint = meta.get("source_fingerprint") or hashlib.sha256(
         original_text.encode("utf-8")
     ).hexdigest()
-    units = build_distill_units(
+    provisional_units = build_distill_units(
         text=text,
         chapters=chapters,
         span_map=span_map,
         source_fingerprint=source_fingerprint,
         max_chars=MAX_CHUNK_CHARS,
         overlap_chars=min(OVERLAP_CHARS, MAX_CHUNK_CHARS - 1),
-        target_ratio=_ratio_for(book_type, strength),
+        target_ratio=STRENGTH_RATIOS[strength] * TYPE_FACTORS[book_type],
     )
+    orientation_scan = scan_orientation(provisional_units, book_type=book_type)
+    budget_plan = allocate_budget(
+        provisional_units,
+        orientation_scan,
+        book_id=book_id,
+        book_type=book_type,
+        strength=strength,
+    )
+    units = apply_budget_plan(provisional_units, budget_plan)
     coverage = validate_unit_coverage(
         units,
         body_start=pruned_structure.body_start,
@@ -305,6 +319,8 @@ async def distill_book(
         book_type=book_type,
         strength=strength,
         distill_units=units,
+        orientation_scan=orientation_scan,
+        budget_plan=budget_plan,
         unit_coverage=coverage,
         total_source_chars=pruned_structure.body_end - pruned_structure.body_start,
     )
@@ -347,11 +363,26 @@ async def distill_book(
                 )
             )
 
-    result.total_output_chars = len(result.final_text)
+    result.total_output_chars = sum(
+        len(unit.content) for unit in result.knowledge_units
+    )
     deduplicated = merge_knowledge_units(result.knowledge_units)
     result.knowledge_units = deduplicated.units
     result.duplicate_merged_count = deduplicated.merged_count
     result.merged_text = _render_knowledge("全书知识精华", result.knowledge_units)
+    result.total_output_chars = sum(
+        len(unit.content) for unit in result.knowledge_units
+    )
+    target_ratio = (
+        budget_plan.total_target_chars / budget_plan.total_source_chars
+        if budget_plan.total_source_chars
+        else 0.0
+    )
+    actual_ratio = (
+        result.total_output_chars / result.total_source_chars
+        if result.total_source_chars
+        else 0.0
+    )
     result.quality_report = evaluate_quality(
         structure=pruned_structure,
         span_map=mapping_report,
@@ -360,8 +391,9 @@ async def distill_book(
         modality_warnings=list(meta.get("modality_warnings", [])),
         processing_errors=result.errors,
         duplicate_merged_count=result.duplicate_merged_count,
+        target_kept_ratio=target_ratio,
+        actual_kept_ratio=actual_ratio,
     )
-    result.total_output_chars = len(result.final_text)
     if progress:
         progress("完成", len(units), len(units))
     return result

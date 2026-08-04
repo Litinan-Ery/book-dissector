@@ -23,6 +23,8 @@ def evaluate_quality(
     modality_warnings: list[str],
     processing_errors: list[str],
     duplicate_merged_count: int,
+    target_kept_ratio: float | None = None,
+    actual_kept_ratio: float | None = None,
 ) -> QualityReport:
     blockers: list[str] = []
     warnings: list[str] = []
@@ -58,6 +60,20 @@ def evaluate_quality(
     if unknown_count:
         warnings.append(f"{unknown_count} 条未知内容未进入正式正文")
 
+    target_ratio = target_kept_ratio or 0.0
+    actual_ratio = actual_kept_ratio or 0.0
+    budget_within_tolerance = True
+    budget_reason = ""
+    if target_kept_ratio is not None and actual_kept_ratio is not None:
+        deviation = abs(actual_kept_ratio - target_kept_ratio)
+        if deviation > 0.03:
+            budget_within_tolerance = False
+            budget_reason = (
+                f"实际保留比例 {actual_kept_ratio:.2%} 与预算 {target_kept_ratio:.2%} "
+                f"相差 {deviation:.2%}，超过 3 个百分点"
+            )
+            blockers.append(f"压缩预算偏差：{budget_reason}")
+
     status = QualityStatus.FAIL if blockers else (
         QualityStatus.WARNING if warnings else QualityStatus.PASS
     )
@@ -68,5 +84,8 @@ def evaluate_quality(
         duplicate_merged_count=duplicate_merged_count,
         warnings=warnings,
         blocking_issues=blockers,
+        target_kept_ratio=round(target_ratio, 6),
+        actual_kept_ratio=round(actual_ratio, 6),
+        budget_within_tolerance=budget_within_tolerance,
+        budget_deviation_reason=budget_reason,
     )
-

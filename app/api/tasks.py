@@ -161,6 +161,8 @@ def _to_out(result) -> DistillResultOut:
         unit_coverage=result.unit_coverage,
         duplicate_merged_count=result.duplicate_merged_count,
         quality_report=result.quality_report,
+        orientation_scan=result.orientation_scan,
+        budget_plan=result.budget_plan,
     )
 
 
@@ -191,6 +193,16 @@ def _persist(book_id: str, result) -> None:
                 "quality_report": result.quality_report.model_dump(mode="json"),
                 "model": config.DEEPSEEK_MODEL,
                 "prompt_version": "1.0",
+                "orientation_scan": (
+                    result.orientation_scan.model_dump(mode="json")
+                    if result.orientation_scan
+                    else None
+                ),
+                "budget_plan": (
+                    result.budget_plan.model_dump(mode="json")
+                    if result.budget_plan
+                    else None
+                ),
                 "chapters": [
                     {
                         "title": c.title,

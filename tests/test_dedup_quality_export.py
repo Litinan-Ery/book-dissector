@@ -134,6 +134,33 @@ def test_unverified_knowledge_or_unresolved_modality_blocks_formal_quality() -> 
     assert any("图片" in issue for issue in report.blocking_issues)
 
 
+def test_budget_deviation_over_three_points_is_reported() -> None:
+    knowledge = _knowledge(
+        "K1",
+        "准确性是效率的前提",
+        _anchor("S1", 0, "准确性是效率的前提"),
+    )
+    report = evaluate_quality(
+        structure=StructureReport(
+            valid=True, body_start=0, body_end=100, body_coverage=1.0
+        ),
+        span_map=SpanMapReport(
+            valid=True, source_coverage=1.0, target_coverage=1.0
+        ),
+        unit_coverage=UnitCoverageReport(coverage=1.0),
+        knowledge_units=[knowledge],
+        modality_warnings=[],
+        processing_errors=[],
+        duplicate_merged_count=0,
+        target_kept_ratio=0.15,
+        actual_kept_ratio=0.22,
+    )
+
+    assert report.status == QualityStatus.FAIL
+    assert report.budget_within_tolerance is False
+    assert "预算" in report.budget_deviation_reason
+
+
 def _write_export_fixture(tmp_path: Path, monkeypatch, status: str) -> str:
     books = tmp_path / "books"
     intermediate = tmp_path / "intermediate"
@@ -217,4 +244,3 @@ def test_failed_quality_allows_only_explicit_diagnostic_export(
 
     assert "未通过质量校验的诊断稿" in diagnostic
     assert "图片语义尚未解析" in diagnostic
-
