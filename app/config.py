@@ -15,6 +15,7 @@ STORAGE_DIR = PROJECT_ROOT / "storage"
 BOOKS_DIR = STORAGE_DIR / "books"
 INTERMEDIATE_DIR = STORAGE_DIR / "intermediate"
 OUTPUT_DIR = STORAGE_DIR / "output"
+RUNS_DIR = STORAGE_DIR / "runs"
 CONFIG_FILE = PROJECT_ROOT / "config.json"
 
 # 本地 Web 服务参数
@@ -27,7 +28,7 @@ DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 
 def ensure_dirs() -> None:
-    for d in (BOOKS_DIR, INTERMEDIATE_DIR, OUTPUT_DIR):
+    for d in (BOOKS_DIR, INTERMEDIATE_DIR, OUTPUT_DIR, RUNS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
