@@ -98,7 +98,10 @@ def _to_status_record(task: StoredTask) -> TaskStatus:
 def _run_task(task_id: str) -> None:
     store = _get_store()
     task = store.get_task(task_id)
-    if task is None:
+    if task is None or not store.claim_task(task_id):
+        with _runtime_lock:
+            _active_tasks.discard(task_id)
+        _schedule_pending()
         return
     try:
         asyncio.run(
@@ -112,9 +115,18 @@ def _run_task(task_id: str) -> None:
         )
     except DistillCancelled:
         pass
-    except Exception:
-        # run_pipeline 已把可展示错误持久化；线程不能吞掉任务状态。
-        pass
+    except Exception as exc:
+        # 流水线通常会自行持久化错误。
+        # 初始化阶段失败时由工作线程兜底，避免任务永久停在运行中。
+        current = store.get_task(task_id)
+        if current is not None and current.status in {"pending", "running"}:
+            store.update_task(
+                task_id,
+                status="error",
+                stage="error",
+                error=str(exc),
+                message="流水线启动或执行失败",
+            )
     finally:
         with _runtime_lock:
             _active_tasks.discard(task_id)
@@ -128,7 +140,12 @@ def _schedule(task_id: str) -> bool:
         if len(_active_tasks) >= MAX_ACTIVE_BOOK_TASKS:
             return False
         _active_tasks.add(task_id)
-    _get_executor().submit(_run_task, task_id)
+    try:
+        _get_executor().submit(_run_task, task_id)
+    except Exception:
+        with _runtime_lock:
+            _active_tasks.discard(task_id)
+        raise
     return True
 
 

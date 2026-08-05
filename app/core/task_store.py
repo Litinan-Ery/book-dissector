@@ -145,6 +145,8 @@ class TaskStore:
         created = _now()
         task_id = task_id or "task_" + uuid.uuid4().hex[:16]
         with self._connect() as connection:
+            # 先取得写锁，保证并发入队不会读到同一个 MAX(queue_order)。
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT COALESCE(MAX(queue_order), -1) + 1 AS next_order FROM tasks"
             ).fetchone()
@@ -210,7 +212,48 @@ class TaskStore:
                 raise KeyError(task_id)
 
     def request_cancel(self, task_id: str) -> None:
-        self.update_task(task_id, cancel_requested=True, message="取消请求已记录")
+        now = _now()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET cancel_requested = 1,
+                    status = CASE
+                        WHEN status = 'pending' THEN 'cancelled'
+                        ELSE status
+                    END,
+                    stage = CASE
+                        WHEN status = 'pending' THEN 'cancelled'
+                        ELSE stage
+                    END,
+                    message = CASE
+                        WHEN status = 'pending' THEN '任务已取消，未开始处理'
+                        ELSE '取消请求已记录'
+                    END,
+                    updated_at = ?
+                WHERE task_id = ? AND status IN ('pending', 'running')
+                """,
+                (now, task_id),
+            )
+            if cursor.rowcount == 0:
+                exists = connection.execute(
+                    "SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)
+                ).fetchone()
+                if not exists:
+                    raise KeyError(task_id)
+
+    def claim_task(self, task_id: str) -> bool:
+        """由单个工作线程原子领取仍可运行的等待任务。"""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'running', message = '任务开始执行', updated_at = ?
+                WHERE task_id = ? AND status = 'pending' AND cancel_requested = 0
+                """,
+                (_now(), task_id),
+            )
+            return cursor.rowcount == 1
 
     def is_cancel_requested(self, task_id: str) -> bool:
         task = self.get_task(task_id)
@@ -219,16 +262,26 @@ class TaskStore:
     def recover_interrupted(self) -> int:
         now = _now()
         with self._connect() as connection:
-            cursor = connection.execute(
+            connection.execute("BEGIN IMMEDIATE")
+            cancelled = connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'cancelled', stage = 'cancelled',
+                    message = '服务重启前已请求取消，任务已取消', updated_at = ?
+                WHERE status = 'running' AND cancel_requested = 1
+                """,
+                (now,),
+            ).rowcount
+            resumable = connection.execute(
                 """
                 UPDATE tasks
                 SET status = 'pending', stage = 'resume',
                     message = '服务重启，等待从检查点恢复', updated_at = ?
-                WHERE status = 'running'
+                WHERE status = 'running' AND cancel_requested = 0
                 """,
                 (now,),
-            )
-            return cursor.rowcount
+            ).rowcount
+            return cancelled + resumable
 
     def upsert_unit(
         self,
@@ -332,16 +385,22 @@ class TaskStore:
         return _decode(row["output_json"], {})
 
     def move_before(self, task_id: str, before_task_id: str) -> None:
-        tasks = self.list_tasks()
-        ids = [task.task_id for task in tasks]
-        if task_id not in ids or before_task_id not in ids:
-            raise KeyError(task_id if task_id not in ids else before_task_id)
-        ids.remove(task_id)
-        ids.insert(ids.index(before_task_id), task_id)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT task_id FROM tasks ORDER BY queue_order, created_at"
+            ).fetchall()
+            ids = [row["task_id"] for row in rows]
+            if task_id not in ids or before_task_id not in ids:
+                raise KeyError(task_id if task_id not in ids else before_task_id)
+            if task_id == before_task_id:
+                return
+            ids.remove(task_id)
+            ids.insert(ids.index(before_task_id), task_id)
+            updated = _now()
             connection.executemany(
                 "UPDATE tasks SET queue_order = ?, updated_at = ? WHERE task_id = ?",
-                [(index, _now(), current_id) for index, current_id in enumerate(ids)],
+                [(index, updated, current_id) for index, current_id in enumerate(ids)],
             )
 
     @staticmethod
@@ -366,4 +425,3 @@ class TaskStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
-
