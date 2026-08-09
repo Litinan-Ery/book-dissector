@@ -7,6 +7,7 @@ from pathlib import Path
 from charset_normalizer import from_bytes
 
 from .base import Chapter, ExtractResult
+from ..modalities import detect_text_modalities
 
 
 def extract(path: Path) -> ExtractResult:
@@ -49,4 +50,11 @@ def extract(path: Path) -> ExtractResult:
 
     if not title:
         title = chapters[0].title if chapters else path.stem
-    return ExtractResult(title=title, author=author, source_format="md", text=text, chapters=chapters)
+    return ExtractResult(
+        title=title,
+        author=author,
+        source_format="md",
+        text=text,
+        chapters=chapters,
+        modality_warnings=detect_text_modalities(text),
+    )

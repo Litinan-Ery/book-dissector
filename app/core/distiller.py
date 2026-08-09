@@ -13,9 +13,11 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import hashlib
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -23,6 +25,7 @@ import httpx
 
 from .. import config
 from .extractors.base import Chapter
+from .task_store import TaskStore
 
 # 单次请求的输入上限（字符）。超出按段落重叠切片，避免超长上下文。
 MAX_CHUNK_CHARS = 12000
@@ -70,7 +73,9 @@ class DistillResult:
     total_source_chars: int = 0
     total_output_chars: int = 0
     api_calls: int = 0
+    cache_hits: int = 0
     errors: list[str] = field(default_factory=list)
+    modality_warnings: list[dict] = field(default_factory=list)
 
     @property
     def final_text(self) -> str:
@@ -145,6 +150,19 @@ def _user_prompt(
     )
 
 
+def _output_length_issue(output: str, target_chars: int) -> str:
+    """返回单元输出长度问题；短尾章允许固定字数的排版与语义开销。"""
+    actual = len(output)
+    # Markdown 标题和固定小节会让很短的单元天然占用数百字。仅按倍数
+    # 判定会把全书压缩比合格的结果因一个尾章误判失败，因此同时要求
+    # 超过 2 倍目标且绝对超额超过 500 字。
+    if actual > max(target_chars * 2, target_chars + 500):
+        return f"输出字数显著超出目标（{actual} vs {target_chars}）"
+    if actual < target_chars * 0.75:
+        return f"输出字数显著少于目标（{actual} vs {target_chars}）"
+    return ""
+
+
 def _split_chapter(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
     """超长章节按段落切块，块间保留重叠。"""
     if len(text) <= max_chars:
@@ -163,44 +181,130 @@ def _split_chapter(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
     return chunks
 
 
-async def _call_deepseek(system: str, user: str, api_key: str) -> str:
-    """调用 DeepSeek chat completions，返回 assistant 文本。"""
-    payload = {
-        "model": config.DEEPSEEK_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 4096,
-    }
-    async with httpx.AsyncClient(timeout=180) as client:
-        resp = await client.post(
-            f"{config.DEEPSEEK_BASE_URL}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
+def build_distill_units(text: str, chapters: list[Chapter]) -> list[tuple[str, str]]:
+    """按最高结构层级构建蒸馏单元。
+
+    提取器会记录章、节、小节的所有标题。如果把每个标题都当成
+    独立模型请求，会将结构扁平化，并使短小节的调用量失控。
+    因此只用当前最高层级的标题切分全文，其下层标题和正文
+    作为该章的完整内容一起交给模型。
+    """
+    valid = [
+        chapter
+        for chapter in chapters
+        if 0 <= chapter.start_char < len(text)
+    ]
+    if not valid:
+        return [
+            (f"第 {index + 1} 部分", segment)
+            for index, segment in enumerate(_split_chapter(text))
+            if segment.strip()
+        ]
+
+    top_level = min(chapter.level for chapter in valid)
+    top_chapters = sorted(
+        (chapter for chapter in valid if chapter.level == top_level),
+        key=lambda chapter: chapter.start_char,
+    )
+    units: list[tuple[str, str]] = []
+    for index, chapter in enumerate(top_chapters):
+        end = (
+            top_chapters[index + 1].start_char
+            if index + 1 < len(top_chapters)
+            else len(text)
         )
-    if resp.status_code == 401:
-        raise RuntimeError("API Key 无效（401），请在设置中重新填写")
-    if resp.status_code == 429:
-        raise RuntimeError("请求过于频繁（429），请稍后重试")
-    if resp.status_code != 200:
-        raise RuntimeError(f"DeepSeek API 错误（HTTP {resp.status_code}）：{resp.text[:200]}")
-    data = resp.json()
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError("DeepSeek 响应格式异常（缺少 choices/message/content）")
+        segment = text[chapter.start_char:end]
+        if segment.strip():
+            units.append((chapter.title or f"章节 {index + 1}", segment))
+    return units
+
+
+def count_distill_calls(text: str, chapters: list[Chapter]) -> int:
+    """使用与真实蒸馏完全相同的分章/切片规则计算请求数。"""
+    return sum(
+        len(_split_chapter(segment))
+        for _title, segment in build_distill_units(text, chapters)
+    )
+
+
+async def _call_deepseek(system: str, user: str, api_key: str) -> str:
+    """调用 DeepSeek chat completions，对短暂错误、空内容和截断做有上限重试。"""
+    max_tokens = 4096
+    last_error = "DeepSeek 请求失败"
+    async with httpx.AsyncClient(timeout=180) as client:
+        for attempt in range(3):
+            payload = {
+                "model": config.DEEPSEEK_MODEL,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": 0.3,
+                "max_tokens": max_tokens,
+                # V4 Flash 默认会生成 reasoning_content；蒸馏输出
+                # 只需要最终 Markdown，禁用 thinking 避免它占用时间和 token。
+                "thinking": {"type": "disabled"},
+            }
+            try:
+                resp = await client.post(
+                    f"{config.DEEPSEEK_BASE_URL}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = f"DeepSeek 网络错误：{exc.__class__.__name__}"
+                if attempt < 2:
+                    await asyncio.sleep(2**attempt)
+                    continue
+                raise RuntimeError(last_error) from exc
+
+            if resp.status_code == 401:
+                raise RuntimeError("API Key 无效（401），请在设置中重新填写")
+            if resp.status_code == 429 or resp.status_code >= 500:
+                last_error = f"DeepSeek API 暂时错误（HTTP {resp.status_code}）"
+                if attempt < 2:
+                    await asyncio.sleep(2**attempt)
+                    continue
+                raise RuntimeError(last_error)
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"DeepSeek API 错误（HTTP {resp.status_code}）：{resp.text[:200]}"
+                )
+            try:
+                data = resp.json()
+                choice = data["choices"][0]
+                content = choice["message"]["content"].strip()
+                finish_reason = choice.get("finish_reason", "")
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                content = ""
+                finish_reason = ""
+
+            if content and finish_reason != "length":
+                return content
+            if finish_reason == "length":
+                last_error = "DeepSeek 输出被 max_tokens 截断"
+                max_tokens = min(max_tokens * 2, 16384)
+            else:
+                last_error = "DeepSeek 响应为空或格式异常"
+            if attempt < 2:
+                await asyncio.sleep(2**attempt)
+                continue
+    raise RuntimeError(last_error)
 
 
 def _fake_call(system: str, user: str, api_key: str) -> str:
     """本地假实现（测试用，不真实调用 API）。"""
     m = re.search(r"第 (\d+)/(\d+) 章「(.+?)」", user)
     title = m.group(3) if m else "未知章节"
-    return f"## {title}\n\n**核心观点**：原文观点（FAKE 测试输出，不真实调用）。\n\n**例子**：原文中的示例。"  # noqa: E501
+    output = f"## {title}\n\n**核心观点**：原文观点（FAKE 测试输出，不真实调用）。\n\n**例子**：原文中的示例。"  # noqa: E501
+    target_match = re.search(r"压缩目标约 (\d+) 字", user)
+    minimum = int(target_match.group(1)) * 4 // 5 if target_match else 0
+    if len(output) < minimum:
+        output += "\n\n" + ("补充测试要点。" * ((minimum - len(output)) // 7 + 1))
+    return output
 
 
 async def distill_book(
@@ -209,6 +313,9 @@ async def distill_book(
     strength: str = DEFAULT_STRENGTH,
     progress: ProgressCb | None = None,
     use_fake: bool | None = None,
+    task_store: TaskStore | None = None,
+    task_id: str | None = None,
+    should_interrupt: Callable[[], bool] | None = None,
 ) -> DistillResult:
     """对一本书执行分段蒸馏。进度回调 (stage, current, total)。"""
     if book_type not in TYPE_FACTORS:
@@ -260,20 +367,15 @@ async def distill_book(
             for c in meta.get("chapters", [])
         ]
 
-    # 蒸馏单元：有章节结构按章节（优先用删减稿的新偏移），无则按文本切片
-    units: list[tuple[str, str]] = []  # (title, text)
-    if chapters:
-        for i, ch in enumerate(chapters):
-            seg = text[ch.start_char : ch.end_char] if ch.end_char > ch.start_char else ""
-            if seg.strip():
-                units.append((ch.title or f"章节 {i+1}", seg))
-    if not units:
-        for i, seg in enumerate(_split_chapter(text)):
-            units.append((f"第 {i+1} 部分", seg))
+    # 只按最高层级章节分单元；章内的节/小节保留在同一语境中。
+    units = build_distill_units(text, chapters)
 
     ratio = _ratio_for(book_type, strength)
     result = DistillResult(
-        book_title=book_title, book_type=book_type, strength=strength
+        book_title=book_title,
+        book_type=book_type,
+        strength=strength,
+        modality_warnings=meta.get("modality_warnings", []),
     )
     system = _system_prompt(book_type)
 
@@ -287,28 +389,132 @@ async def distill_book(
         error = ""
         for j, chunk in enumerate(chunks):
             sub_title = title if len(chunks) == 1 else f"{title}（{j+1}/{len(chunks)}）"
-            user = _user_prompt(book_title, i + 1, len(units), sub_title, chunk, target // len(chunks))
+            chunk_target = max(1, target // len(chunks))
+            user = _user_prompt(
+                book_title, i + 1, len(units), sub_title, chunk, chunk_target
+            )
+            unit_id = f"unit_{i:05d}_{j:03d}"
+            cache_key = hashlib.sha256(
+                json.dumps(
+                    {
+                        "book_id": book_id,
+                        "book_type": book_type,
+                        "strength": strength,
+                        "model": config.DEEPSEEK_MODEL,
+                        "unit_id": unit_id,
+                        "text": chunk,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
             try:
-                if use_fake:
-                    out = _fake_call(system, user, api_key)
-                else:
-                    out = await _call_deepseek(system, user, api_key)
-                result.api_calls += 1
+                if should_interrupt and should_interrupt():
+                    raise DistillInterrupted("服务正在关闭，已停止创建新的模型请求")
+                if task_store and task_id and task_store.is_cancel_requested(task_id):
+                    raise DistillCancelled("任务已取消，停止创建新的模型请求")
+                out = ""
+                if task_store and task_id:
+                    checkpoint = next(
+                        (item for item in task_store.get_units(task_id) if item.unit_id == unit_id),
+                        None,
+                    )
+                    if (
+                        checkpoint
+                        and checkpoint.status == "done"
+                        and checkpoint.cache_key == cache_key
+                    ):
+                        out = str(checkpoint.output.get("text", ""))
+                    if not out:
+                        cached = task_store.get_cache(cache_key)
+                        if cached:
+                            out = str(cached.get("text", ""))
+                    # 旧检查点可能在长度校验之前被写为 done。
+                    # 不复用不合格缓存，但保留其它已验证单元。
+                    if out and _output_length_issue(out, chunk_target):
+                        out = ""
+                    if out:
+                        result.cache_hits += 1
+                        task_store.upsert_unit(
+                            task_id, unit_id, "done", cache_key, output={"text": out}
+                        )
+                    else:
+                        attempts = (checkpoint.attempts if checkpoint else 0) + 1
+                        task_store.upsert_unit(
+                            task_id, unit_id, "running", cache_key, attempts=attempts
+                        )
+                if not out:
+                    for length_attempt in range(3):
+                        # A length retry is a brand-new model request. Re-check
+                        # persisted stop/delete state after every completed call
+                        # so a delete received during that call cannot start the
+                        # next retry.
+                        if task_store and task_id and task_store.is_cancel_requested(task_id):
+                            raise DistillCancelled("任务已取消，停止创建新的模型请求")
+                        if should_interrupt and should_interrupt():
+                            raise DistillInterrupted("服务正在关闭，已停止创建新的模型请求")
+                        if use_fake:
+                            out = _fake_call(system, user, api_key)
+                        else:
+                            out = await _call_deepseek(system, user, api_key)
+                        result.api_calls += 1
+                        issue = _output_length_issue(out, chunk_target)
+                        if not issue:
+                            break
+                        if length_attempt < 2:
+                            minimum_chars = max(1, int(chunk_target * 0.8))
+                            maximum_chars = max(minimum_chars, int(chunk_target * 1.25))
+                            user += (
+                                f"\n\n上一版{issue}。请重新输出完整 Markdown，"
+                                f"正文必须达到 {minimum_chars}–{maximum_chars} 字，"
+                                "从原文补充必要的关键论据、具体事实和代表例子，"
+                                "不得注水、不得写修改说明。"
+                            )
+                            continue
+                        raise RuntimeError(issue)
+                    if task_store and task_id:
+                        task_store.upsert_unit(
+                            task_id,
+                            unit_id,
+                            "done",
+                            cache_key,
+                            attempts=(checkpoint.attempts if checkpoint else 0) + 1,
+                            output={"text": out},
+                        )
+                        task_store.put_cache(
+                            cache_key,
+                            {"text": out},
+                            book_id=book_id,
+                        )
+                        if task_store.is_cancel_requested(task_id):
+                            raise DistillCancelled("任务已取消；已完成单元已保存，可稍后恢复")
+                        if should_interrupt and should_interrupt():
+                            raise DistillInterrupted("服务正在关闭；已完成单元已保存")
                 parts.append(out)
+            except (DistillCancelled, DistillInterrupted):
+                raise
             except Exception as exc:
                 error = str(exc)
                 result.errors.append(f"{sub_title}：{exc}")
+                if task_store and task_id:
+                    checkpoint = next(
+                        (item for item in task_store.get_units(task_id) if item.unit_id == unit_id),
+                        None,
+                    )
+                    task_store.upsert_unit(
+                        task_id,
+                        unit_id,
+                        "error",
+                        cache_key,
+                        attempts=(checkpoint.attempts if checkpoint else 0) + 1,
+                        error=str(exc),
+                    )
                 break
         output = "\n\n".join(parts)
         if output.strip():
-            if len(output) > target * 2:
-                result.errors.append(
-                    f"{title}：输出字数显著超出目标（{len(output)} vs {target}）"
-                )
-            elif len(output) < target * 0.4:
-                result.errors.append(
-                    f"{title}：输出字数显著少于目标（{len(output)} vs {target}）"
-                )
+            issue = _output_length_issue(output, target)
+            if issue:
+                result.errors.append(f"{title}：{issue}")
         result.chapters.append(
             ChapterDistill(
                 title=title,
@@ -325,3 +531,11 @@ async def distill_book(
     if progress:
         progress("完成", len(units), len(units))
     return result
+
+
+class DistillCancelled(RuntimeError):
+    """用户取消任务后，在创建下一次模型请求前中止。"""
+
+
+class DistillInterrupted(RuntimeError):
+    """服务关闭时在完成当前检查点后中止，供下次启动恢复。"""

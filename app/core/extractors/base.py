@@ -40,6 +40,7 @@ class ExtractResult:
     source_format: str = ""
     text: str = ""
     chapters: list[Chapter] = field(default_factory=list)
+    modality_warnings: list[dict] = field(default_factory=list)
     error: str = ""
 
     @property
@@ -83,6 +84,7 @@ def extract_book(book_id: str, path: Path) -> ExtractResult:
             "author": result.author,
             "word_count": 0,
             "chapters": [],
+            "modality_warnings": result.modality_warnings,
             "extract_status": "error",
             "extract_error": result.error or "未能提取到文本（可能是扫描版 PDF）",
         }
@@ -102,6 +104,7 @@ def extract_book(book_id: str, path: Path) -> ExtractResult:
             {"title": c.title, "level": c.level, "start_char": c.start_char, "end_char": c.end_char}
             for c in result.chapters
         ],
+        "modality_warnings": result.modality_warnings,
         "extract_status": "ok",
         "extract_error": "",
     }

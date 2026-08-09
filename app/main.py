@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,11 +17,24 @@ from starlette.responses import Response
 
 from . import config
 from .api import books, export, prune, settings, tasks
+from .core.library_cleanup import recover_incomplete_book_deletions
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    recover_incomplete_book_deletions(tasks._get_store())
+    books.recover_incomplete_extractions()
+    tasks.recover_and_schedule()
+    try:
+        yield
+    finally:
+        tasks.shutdown_runtime()
 
 app = FastAPI(
     title="图书拆解器",
     description="导入书籍 → 删减无关内容 → 压缩提炼 → 导出精华 MD",
-    version="0.1.0",
+    version="0.2.1",
+    lifespan=lifespan,
 )
 
 

@@ -15,6 +15,7 @@ STORAGE_DIR = PROJECT_ROOT / "storage"
 BOOKS_DIR = STORAGE_DIR / "books"
 INTERMEDIATE_DIR = STORAGE_DIR / "intermediate"
 OUTPUT_DIR = STORAGE_DIR / "output"
+TASK_DB = STORAGE_DIR / "tasks.db"
 CONFIG_FILE = PROJECT_ROOT / "config.json"
 
 # 本地 Web 服务参数
@@ -67,4 +68,14 @@ def set_api_key(api_key_value: str) -> None:
 def clear_api_key() -> None:
     cfg = load_config()
     cfg.pop("deepseek_api_key", None)
+    save_config(cfg)
+
+
+def has_cloud_consent() -> bool:
+    return bool(load_config().get("cloud_consent_confirmed", False))
+
+
+def confirm_cloud_consent() -> None:
+    cfg = load_config()
+    cfg["cloud_consent_confirmed"] = True
     save_config(cfg)

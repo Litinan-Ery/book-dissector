@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import config
+from .hooks import run_post_export_hooks
 
 EXPORT_SUFFIX = "_精华"
 
@@ -45,6 +46,7 @@ def build_export_md(book_id: str) -> str:
     api_calls = distill_meta.get("api_calls", 0)
     kept_ratio = (output_chars / source_chars) if source_chars else 0.0
     errors = distill_meta.get("errors", [])
+    modality_warnings = book_meta.get("modality_warnings", [])
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     strength_names = {
@@ -69,7 +71,16 @@ def build_export_md(book_id: str) -> str:
     header.append("---")
 
     body = distill_path.read_text(encoding="utf-8").strip()
-    return "\n".join(header) + "\n\n" + body + "\n"
+    warning_block = ""
+    if modality_warnings:
+        lines = ["## 内容处理告警", ""]
+        for item in modality_warnings:
+            lines.append(
+                f"- {item.get('location', '正文')}：{item.get('message', '检测到暂不能处理的内容')}"
+                f"（{item.get('count', 1)} 处）"
+            )
+        warning_block = "\n".join(lines) + "\n\n"
+    return "\n".join(header) + "\n\n" + warning_block + body + "\n"
 
 
 def export_book(book_id: str) -> Path:
@@ -79,12 +90,13 @@ def export_book(book_id: str) -> Path:
 
     meta_path = config.BOOKS_DIR / f"{book_id}.meta.json"
     title = book_id
+    meta: dict = {}
     if meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             title = meta.get("title") or book_id
         except (json.JSONDecodeError, OSError):
-            pass
+            meta = {}
 
     # 文件名安全化：去除路径分隔符与危险字符
     safe_title = "".join(c for c in title if c not in '/\\:*?"<>|').strip() or book_id
@@ -99,4 +111,5 @@ def export_book(book_id: str) -> Path:
         n += 1
 
     dest.write_text(content, encoding="utf-8")
+    run_post_export_hooks(dest, book_id=book_id, book_meta=meta)
     return dest

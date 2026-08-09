@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 
 from .. import config
 from ..core.exporter import build_export_md, export_book
+from ..core.hooks import PostExportHookError
 from ..models.schemas import ExportResultOut, ExportInfo
 
 router = APIRouter(prefix="/api", tags=["export"])
@@ -27,6 +28,8 @@ def do_export(book_id: str) -> ExportResultOut:
         dest = export_book(book_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except PostExportHookError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
     return ExportResultOut(
         filename=dest.name,
         path=str(dest),

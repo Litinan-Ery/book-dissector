@@ -8,6 +8,7 @@ from pathlib import Path
 from ebooklib import ITEM_DOCUMENT, epub
 
 from .base import Chapter, ExtractResult
+from ..modalities import detect_html_modalities, merge_warnings
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -46,6 +47,7 @@ def extract(path: Path) -> ExtractResult:
 
     chapters: list[Chapter] = []
     parts: list[str] = []
+    modality_warnings: list[dict] = []
 
     # 仅按 EPUB spine（阅读顺序）提取正文，导航页虽然也是 XHTML，
     # 但不能被当作正文或章节重复读入。
@@ -64,6 +66,9 @@ def extract(path: Path) -> ExtractResult:
 
     for item in ordered_items:
         raw = item.get_content().decode("utf-8", errors="replace")
+        modality_warnings.extend(
+            detect_html_modalities(raw, location=item.get_name() or "EPUB 正文")
+        )
         text = _clean_html(raw)
         if not text.strip():
             continue
@@ -103,4 +108,5 @@ def extract(path: Path) -> ExtractResult:
         source_format="epub",
         text=full,
         chapters=chapters,
+        modality_warnings=merge_warnings(modality_warnings),
     )

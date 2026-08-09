@@ -11,12 +11,20 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from .. import config
 from ..core.extractors.base import extract_book
-from ..models.schemas import BookInfo
+from ..core.library_cleanup import (
+    WILL_DELETE,
+    WILL_KEEP,
+    book_exists,
+    delete_book,
+    validate_resource_id,
+)
+from ..core.task_store import ActiveBookTasksError
+from ..models.schemas import BookDeletionPreview, BookInfo, DeletionResult
 
 router = APIRouter(prefix="/api/books", tags=["books"])
 
@@ -24,6 +32,19 @@ ALLOWED_EXTENSIONS = {".epub", ".pdf", ".txt", ".md"}
 # 提取相关附属文件的后缀（列表时需要跳过）
 META_SUFFIX = ".meta.json"
 TEXT_SUFFIX = ".txt"
+_extraction_lock = threading.Lock()
+_active_extractions: set[str] = set()
+
+
+def is_extraction_active(book_id: str) -> bool:
+    with _extraction_lock:
+        return book_id in _active_extractions
+
+
+def _task_store():
+    from . import tasks as task_api
+
+    return task_api._get_store()
 
 
 def _load_meta(book_id: str) -> dict:
@@ -34,6 +55,98 @@ def _load_meta(book_id: str) -> dict:
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
+
+
+def _write_meta(book_id: str, payload: dict) -> None:
+    (config.BOOKS_DIR / f"{book_id}{META_SUFFIX}").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _mark_processing(book_id: str, source_path: Path) -> None:
+    meta = {
+        "title": "",
+        "author": "",
+        "word_count": 0,
+        "chapters": [],
+        "modality_warnings": [],
+        **_load_meta(book_id),
+        "book_id": book_id,
+        "source_format": source_path.suffix.lower().lstrip("."),
+        "extract_status": "processing",
+        "extract_error": "",
+    }
+    _write_meta(book_id, meta)
+
+
+def _mark_extraction_error(book_id: str, source_path: Path, exc: Exception) -> None:
+    meta = {
+        "title": "",
+        "author": "",
+        "word_count": 0,
+        "chapters": [],
+        "modality_warnings": [],
+        **_load_meta(book_id),
+        "book_id": book_id,
+        "source_format": source_path.suffix.lower().lstrip("."),
+        "extract_status": "error",
+        "extract_error": f"提取异常：{exc.__class__.__name__}: {exc}",
+    }
+    _write_meta(book_id, meta)
+
+
+def _run_extraction(book_id: str, source_path: Path) -> None:
+    try:
+        extract_book(book_id, source_path)
+    except Exception as exc:
+        _mark_extraction_error(book_id, source_path, exc)
+    finally:
+        with _extraction_lock:
+            _active_extractions.discard(book_id)
+
+
+def _start_extraction(book_id: str, source_path: Path) -> bool:
+    with _extraction_lock:
+        if book_id in _active_extractions:
+            return False
+        _mark_processing(book_id, source_path)
+        _active_extractions.add(book_id)
+    thread = threading.Thread(
+        target=_run_extraction,
+        args=(book_id, source_path),
+        daemon=True,
+        name=f"book-extract-{book_id}",
+    )
+    try:
+        thread.start()
+    except Exception:
+        with _extraction_lock:
+            _active_extractions.discard(book_id)
+        raise
+    return True
+
+
+def recover_incomplete_extractions() -> int:
+    """服务重启后，重新执行尚未产出文本的上传提取任务。"""
+    config.ensure_dirs()
+    recovered = 0
+    for source_path in sorted(config.BOOKS_DIR.iterdir()):
+        if not source_path.is_file() or source_path.name.startswith("."):
+            continue
+        if source_path.name.endswith(META_SUFFIX) or "_" not in source_path.name:
+            continue
+        book_id, _, _original_name = source_path.name.partition("_")
+        meta = _load_meta(book_id)
+        status = meta.get("extract_status", "pending")
+        text_exists = (config.BOOKS_DIR / f"{book_id}{TEXT_SUFFIX}").exists()
+        if status not in {"pending", "processing"} or (status == "pending" and text_exists):
+            continue
+        try:
+            if _start_extraction(book_id, source_path):
+                recovered += 1
+        except Exception as exc:
+            _mark_extraction_error(book_id, source_path, exc)
+    return recovered
 
 
 @router.post("/upload", response_model=BookInfo)
@@ -57,26 +170,12 @@ async def upload_book(file: UploadFile = File(...)) -> BookInfo:
             out.write(chunk)
             size += len(chunk)
 
-    # 后台线程执行提取，不阻塞上传响应
-    def _run() -> None:
-        try:
-            extract_book(book_id, dest)
-        except Exception as exc:  # 提取失败也要落盘错误状态
-            meta = {
-                "book_id": book_id,
-                "source_format": ext,
-                "title": "",
-                "author": "",
-                "word_count": 0,
-                "chapters": [],
-                "extract_status": "error",
-                "extract_error": f"提取异常：{exc.__class__.__name__}: {exc}",
-            }
-            (config.BOOKS_DIR / f"{book_id}{META_SUFFIX}").write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-
-    threading.Thread(target=_run, daemon=True).start()
+    # 先持久化状态，再在后台提取；页面刷新和服务重启都能看到真实进度。
+    try:
+        _start_extraction(book_id, dest)
+    except Exception as exc:
+        _mark_extraction_error(book_id, dest, exc)
+        raise
 
     return BookInfo(
         id=book_id,
@@ -123,9 +222,66 @@ def list_books() -> list[BookInfo]:
                 word_count=meta.get("word_count", 0),
                 extract_status=extract_status,
                 extract_error=meta.get("extract_error", ""),
+                modality_warnings=meta.get("modality_warnings", []),
             )
         )
     return items
+
+
+@router.get("/{book_id}/deletion-preview", response_model=BookDeletionPreview)
+def deletion_preview(book_id: str) -> BookDeletionPreview:
+    try:
+        validate_resource_id(book_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not book_exists(book_id):
+        raise HTTPException(status_code=404, detail="书籍不存在")
+    meta = _load_meta(book_id)
+    related = _task_store().list_tasks_for_book(book_id)
+    active = [
+        task.task_id
+        for task in related
+        if task.status in {"pending", "running"}
+    ]
+    return BookDeletionPreview(
+        book_id=book_id,
+        title=meta.get("title") or book_id,
+        task_count=len(related),
+        active_task_ids=active,
+        will_delete=WILL_DELETE,
+        will_keep=WILL_KEEP,
+    )
+
+
+@router.delete("/{book_id}", response_model=DeletionResult)
+def remove_book(book_id: str) -> DeletionResult:
+    try:
+        validate_resource_id(book_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    meta = _load_meta(book_id)
+    if is_extraction_active(book_id) or meta.get("extract_status") == "processing":
+        raise HTTPException(status_code=409, detail="书籍正在提取，请完成后再删除")
+    try:
+        outcome = delete_book(book_id, _task_store())
+    except ActiveBookTasksError as exc:
+        ids = "、".join(exc.task_ids)
+        raise HTTPException(
+            status_code=409,
+            detail=f"存在等待中或运行中的关联任务，请先删除：{ids}",
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"删除失败，已尝试回滚：{exc}")
+    return DeletionResult(
+        resource_id=book_id,
+        state="deleted",
+        message="书籍条目已删除" if not outcome.already_absent else "书籍条目已不存在",
+        already_absent=outcome.already_absent,
+    )
 
 
 def ext_of(filename: str) -> str:

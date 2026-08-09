@@ -19,6 +19,7 @@ class BookInfo(BaseModel):
     word_count: int = 0
     extract_status: str = "pending"  # pending / processing / ok / error
     extract_error: str = ""
+    modality_warnings: list[dict] = Field(default_factory=list)
 
 
 class SettingsUpdate(BaseModel):
@@ -32,6 +33,7 @@ class SettingsView(BaseModel):
 
     deepseek_api_key_configured: bool
     deepseek_model: str
+    cloud_consent_confirmed: bool = False
 
 
 class ApiKeyTestResult(BaseModel):
@@ -51,6 +53,32 @@ class TaskStatus(BaseModel):
     total: int = 0
     error: str = ""
     message: str = ""
+    book_id: str = ""
+    delete_requested: bool = False
+    estimate: dict = Field(default_factory=dict)
+    result: dict = Field(default_factory=dict)
+
+
+class DeletionResult(BaseModel):
+    resource_id: str
+    state: str  # deleted / deleting
+    message: str
+    already_absent: bool = False
+
+
+class BookDeletionPreview(BaseModel):
+    book_id: str
+    title: str
+    task_count: int
+    active_task_ids: list[str] = Field(default_factory=list)
+    will_delete: list[str] = Field(default_factory=list)
+    will_keep: list[str] = Field(default_factory=list)
+
+
+class RevealOutputResult(BaseModel):
+    ok: bool
+    path: str
+    message: str
 
 
 class DisassembleRequest(BaseModel):
@@ -58,6 +86,7 @@ class DisassembleRequest(BaseModel):
 
     book_type: str = "general"   # general / fiction / technical
     strength: str = "standard"   # conservative / standard / aggressive
+    cloud_consent: bool = False
 
 
 class ChapterDistillOut(BaseModel):
@@ -83,6 +112,8 @@ class DistillResultOut(BaseModel):
     api_calls: int
     errors: list[str]
     kept_ratio: float
+    cache_hits: int = 0
+    modality_warnings: list[dict] = Field(default_factory=list)
 
 
 class PruneRegion(BaseModel):
