@@ -38,4 +38,3 @@ def test_headings_in_same_xhtml_have_distinct_source_offsets(tmp_path: Path) -> 
     for chapter in result.chapters:
         assert result.text[chapter.start_char :].startswith(chapter.title)
         assert chapter.start_char < chapter.end_char
-

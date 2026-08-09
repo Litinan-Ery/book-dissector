@@ -39,4 +39,3 @@ def test_pdf_extracts_text_or_reports_scan_warning(tmp_path: Path) -> None:
 
     assert result.ok
     assert "Fixture PDF body" in result.text
-
