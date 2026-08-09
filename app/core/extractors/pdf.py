@@ -6,6 +6,7 @@ from pathlib import Path
 import fitz
 
 from .base import ExtractResult
+from ..modalities import detect_text_modalities, merge_warnings
 
 
 def extract(path: Path) -> ExtractResult:
@@ -19,28 +20,39 @@ def extract(path: Path) -> ExtractResult:
     author = (meta.get("author") or "").strip()
 
     parts: list[str] = []
-    raw_text_chars = 0
+    modality_warnings: list[dict] = []
     try:
         for page_number, page in enumerate(doc, start=1):
             page_text = page.get_text("text")
-            raw_text_chars += len(page_text.strip())
-            markers: list[str] = []
+            parts.append(page_text)
+            modality_warnings.extend(
+                detect_text_modalities(page_text, location=f"第 {page_number} 页")
+            )
             image_count = len(page.get_images(full=True))
             if image_count:
-                markers.append(f"[图片：第 {page_number} 页，共 {image_count} 幅]")
-            if markers:
-                page_text = page_text.rstrip() + "\n" + "\n".join(markers) + "\n"
-            parts.append(page_text)
+                modality_warnings.append(
+                    {
+                        "type": "image",
+                        "count": image_count,
+                        "location": f"第 {page_number} 页",
+                        "message": "检测到图片；当前不能理解图片语义",
+                    }
+                )
     finally:
         doc.close()
 
     text = "\n".join(parts)
-    if raw_text_chars < 50:
+    if len(text.strip()) < 50:
         return ExtractResult(
             title=title,
             author=author,
             source_format="pdf",
-            text=text,
             error="提取到的文本过少，可能是扫描版 PDF（需要 OCR，当前不支持）",
         )
-    return ExtractResult(title=title, author=author, source_format="pdf", text=text)
+    return ExtractResult(
+        title=title,
+        author=author,
+        source_format="pdf",
+        text=text,
+        modality_warnings=merge_warnings(modality_warnings),
+    )

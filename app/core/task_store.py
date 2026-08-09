@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -36,10 +37,10 @@ class StoredTask:
     error: str
     message: str
     cancel_requested: bool
+    delete_requested: bool
     queue_order: int
     created_at: str
     updated_at: str
-    run_id: str = ""
     result: dict[str, Any] = field(default_factory=dict)
     estimate: dict[str, Any] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
@@ -57,7 +58,29 @@ class StoredUnit:
     updated_at: str = ""
 
 
+@dataclass
+class BookDeletionRecord:
+    book_id: str
+    state: str
+    recycle_path: str
+    manifest: list[dict[str, str]] = field(default_factory=list)
+    error: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class ActiveBookTasksError(RuntimeError):
+    def __init__(self, task_ids: list[str]) -> None:
+        self.task_ids = task_ids
+        super().__init__("书籍仍有关联的等待中或运行中任务")
+
+
+class BookDeletionInProgressError(RuntimeError):
+    pass
+
+
 class TaskStore:
+    _INIT_LOCK = threading.Lock()
     _TASK_COLUMNS = {
         "status",
         "stage",
@@ -66,7 +89,7 @@ class TaskStore:
         "error",
         "message",
         "cancel_requested",
-        "run_id",
+        "delete_requested",
         "result_json",
         "estimate_json",
         "metrics_json",
@@ -75,18 +98,19 @@ class TaskStore:
     def __init__(self, database: Path) -> None:
         self.database = database
         self.database.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        with self._INIT_LOCK:
+            self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database, timeout=10)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 10000")
-        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -101,8 +125,8 @@ class TaskStore:
                     error TEXT NOT NULL DEFAULT '',
                     message TEXT NOT NULL DEFAULT '',
                     cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    delete_requested INTEGER NOT NULL DEFAULT 0,
                     queue_order INTEGER NOT NULL,
-                    run_id TEXT NOT NULL DEFAULT '',
                     result_json TEXT NOT NULL DEFAULT '{}',
                     estimate_json TEXT NOT NULL DEFAULT '{}',
                     metrics_json TEXT NOT NULL DEFAULT '{}',
@@ -125,13 +149,65 @@ class TaskStore:
                 );
                 CREATE TABLE IF NOT EXISTS unit_cache (
                     cache_key TEXT PRIMARY KEY,
+                    book_id TEXT NOT NULL DEFAULT '',
                     output_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     last_hit_at TEXT NOT NULL,
                     hit_count INTEGER NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS book_deletions (
+                    book_id TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    recycle_path TEXT NOT NULL DEFAULT '',
+                    manifest_json TEXT NOT NULL DEFAULT '[]',
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
+            self._ensure_column(
+                connection,
+                "tasks",
+                "delete_requested",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "unit_cache",
+                "book_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_unit_cache_book ON unit_cache(book_id)"
+            )
+            connection.execute(
+                """
+                UPDATE unit_cache
+                SET book_id = COALESCE((
+                    SELECT tasks.book_id
+                    FROM task_units
+                    JOIN tasks ON tasks.task_id = task_units.task_id
+                    WHERE task_units.cache_key = unit_cache.cache_key
+                    LIMIT 1
+                ), '')
+                WHERE book_id = ''
+                """
+            )
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def create_task(
         self,
@@ -145,8 +221,13 @@ class TaskStore:
         created = _now()
         task_id = task_id or "task_" + uuid.uuid4().hex[:16]
         with self._connect() as connection:
-            # 先取得写锁，保证并发入队不会读到同一个 MAX(queue_order)。
             connection.execute("BEGIN IMMEDIATE")
+            deleting = connection.execute(
+                "SELECT state FROM book_deletions WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+            if deleting is not None:
+                raise BookDeletionInProgressError(book_id)
             row = connection.execute(
                 "SELECT COALESCE(MAX(queue_order), -1) + 1 AS next_order FROM tasks"
             ).fetchone()
@@ -198,7 +279,7 @@ class TaskStore:
                 raise ValueError(f"unsupported task field: {key}")
             if column.endswith("_json"):
                 value = json.dumps(value or {}, ensure_ascii=False)
-            if column == "cancel_requested":
+            if column in {"cancel_requested", "delete_requested"}:
                 value = int(bool(value))
             encoded[column] = value
         encoded["updated_at"] = _now()
@@ -212,44 +293,29 @@ class TaskStore:
                 raise KeyError(task_id)
 
     def request_cancel(self, task_id: str) -> None:
-        now = _now()
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE tasks
-                SET cancel_requested = 1,
-                    status = CASE
-                        WHEN status = 'pending' THEN 'cancelled'
-                        ELSE status
-                    END,
-                    stage = CASE
-                        WHEN status = 'pending' THEN 'cancelled'
-                        ELSE stage
-                    END,
-                    message = CASE
-                        WHEN status = 'pending' THEN '任务已取消，未开始处理'
-                        ELSE '取消请求已记录'
-                    END,
-                    updated_at = ?
-                WHERE task_id = ? AND status IN ('pending', 'running')
-                """,
-                (now, task_id),
+        task = self.get_task(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        if task.status == "pending":
+            self.update_task(
+                task_id,
+                status="cancelled",
+                stage="cancelled",
+                cancel_requested=True,
+                message="等待中的任务已取消",
             )
-            if cursor.rowcount == 0:
-                exists = connection.execute(
-                    "SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)
-                ).fetchone()
-                if not exists:
-                    raise KeyError(task_id)
+        else:
+            self.update_task(task_id, cancel_requested=True, message="取消请求已记录")
 
     def claim_task(self, task_id: str) -> bool:
-        """由单个工作线程原子领取仍可运行的等待任务。"""
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 UPDATE tasks
-                SET status = 'running', message = '任务开始执行', updated_at = ?
-                WHERE task_id = ? AND status = 'pending' AND cancel_requested = 0
+                SET status = 'running', stage = 'prune', message = '任务开始执行',
+                    updated_at = ?
+                WHERE task_id = ? AND status = 'pending'
+                    AND cancel_requested = 0 AND delete_requested = 0
                 """,
                 (_now(), task_id),
             )
@@ -262,13 +328,16 @@ class TaskStore:
     def recover_interrupted(self) -> int:
         now = _now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            deleted = connection.execute(
+                "DELETE FROM tasks WHERE delete_requested = 1"
+            ).rowcount
             cancelled = connection.execute(
                 """
                 UPDATE tasks
                 SET status = 'cancelled', stage = 'cancelled',
                     message = '服务重启前已请求取消，任务已取消', updated_at = ?
                 WHERE status = 'running' AND cancel_requested = 1
+                    AND delete_requested = 0
                 """,
                 (now,),
             ).rowcount
@@ -278,10 +347,11 @@ class TaskStore:
                 SET status = 'pending', stage = 'resume',
                     message = '服务重启，等待从检查点恢复', updated_at = ?
                 WHERE status = 'running' AND cancel_requested = 0
+                    AND delete_requested = 0
                 """,
                 (now,),
             ).rowcount
-            return cancelled + resumable
+            return deleted + cancelled + resumable
 
     def upsert_unit(
         self,
@@ -352,19 +422,35 @@ class TaskStore:
             )
             return cursor.rowcount
 
-    def put_cache(self, cache_key: str, output: dict[str, Any]) -> None:
+    def put_cache(
+        self,
+        cache_key: str,
+        output: dict[str, Any],
+        *,
+        book_id: str = "",
+    ) -> None:
         now = _now()
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO unit_cache (
-                    cache_key, output_json, created_at, last_hit_at, hit_count
-                ) VALUES (?, ?, ?, ?, 0)
+                    cache_key, book_id, output_json, created_at, last_hit_at, hit_count
+                ) VALUES (?, ?, ?, ?, ?, 0)
                 ON CONFLICT(cache_key) DO UPDATE SET
+                    book_id = CASE
+                        WHEN excluded.book_id != '' THEN excluded.book_id
+                        ELSE unit_cache.book_id
+                    END,
                     output_json = excluded.output_json,
                     last_hit_at = excluded.last_hit_at
                 """,
-                (cache_key, json.dumps(output, ensure_ascii=False), now, now),
+                (
+                    cache_key,
+                    book_id,
+                    json.dumps(output, ensure_ascii=False),
+                    now,
+                    now,
+                ),
             )
 
     def get_cache(self, cache_key: str) -> dict[str, Any] | None:
@@ -383,6 +469,196 @@ class TaskStore:
                 (_now(), cache_key),
             )
         return _decode(row["output_json"], {})
+
+    def request_task_delete(self, task_id: str) -> str:
+        """请求删除任务，返回 deleted/deleting/absent。"""
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, delete_requested FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                return "absent"
+            if row["status"] == "running":
+                connection.execute(
+                    """
+                    UPDATE tasks
+                    SET delete_requested = 1, cancel_requested = 1,
+                        stage = 'deleting', message = '正在停止并删除',
+                        updated_at = ?
+                    WHERE task_id = ?
+                    """,
+                    (now, task_id),
+                )
+                return "deleting"
+            connection.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+            return "deleted"
+
+    def finalize_task_delete(self, task_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM tasks WHERE task_id = ? AND delete_requested = 1",
+                (task_id,),
+            )
+            return cursor.rowcount == 1
+
+    def is_delete_requested(self, task_id: str) -> bool:
+        task = self.get_task(task_id)
+        return bool(task and task.delete_requested)
+
+    def list_tasks_for_book(self, book_id: str) -> list[StoredTask]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM tasks
+                WHERE book_id = ?
+                ORDER BY queue_order, created_at
+                """,
+                (book_id,),
+            ).fetchall()
+        return [self._task_from_row(row) for row in rows]
+
+    def prepare_book_deletion(
+        self,
+        book_id: str,
+        recycle_path: str,
+        manifest: list[dict[str, str]],
+    ) -> str:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT state FROM book_deletions WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+            if existing is not None:
+                return str(existing["state"])
+            active_rows = connection.execute(
+                """
+                SELECT task_id FROM tasks
+                WHERE book_id = ? AND status IN ('pending', 'running')
+                ORDER BY queue_order, created_at
+                """,
+                (book_id,),
+            ).fetchall()
+            active = [str(row["task_id"]) for row in active_rows]
+            if active:
+                raise ActiveBookTasksError(active)
+            connection.execute(
+                """
+                INSERT INTO book_deletions (
+                    book_id, state, recycle_path, manifest_json, error,
+                    created_at, updated_at
+                ) VALUES (?, 'preparing', ?, ?, '', ?, ?)
+                """,
+                (
+                    book_id,
+                    recycle_path,
+                    json.dumps(manifest, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+        return "preparing"
+
+    def mark_book_deletion_staged(self, book_id: str) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE book_deletions
+                SET state = 'staged', error = '', updated_at = ?
+                WHERE book_id = ? AND state != 'completed'
+                """,
+                (_now(), book_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(book_id)
+
+    def fail_book_deletion(self, book_id: str, error: str) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE book_deletions
+                SET state = 'failed', error = ?, updated_at = ?
+                WHERE book_id = ? AND state != 'completed'
+                """,
+                (error, _now(), book_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(book_id)
+
+    def abort_book_deletion(self, book_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM book_deletions WHERE book_id = ? AND state != 'completed'",
+                (book_id,),
+            )
+
+    def finalize_book_deletion(self, book_id: str) -> None:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            record = connection.execute(
+                "SELECT state FROM book_deletions WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+            if record is None:
+                raise KeyError(book_id)
+            if record["state"] == "completed":
+                return
+            active_rows = connection.execute(
+                """
+                SELECT task_id FROM tasks
+                WHERE book_id = ? AND status IN ('pending', 'running')
+                ORDER BY queue_order, created_at
+                """,
+                (book_id,),
+            ).fetchall()
+            active = [str(row["task_id"]) for row in active_rows]
+            if active:
+                raise ActiveBookTasksError(active)
+            connection.execute(
+                """
+                DELETE FROM unit_cache
+                WHERE book_id = ? OR cache_key IN (
+                    SELECT task_units.cache_key
+                    FROM task_units
+                    JOIN tasks ON tasks.task_id = task_units.task_id
+                    WHERE tasks.book_id = ?
+                )
+                """,
+                (book_id, book_id),
+            )
+            connection.execute("DELETE FROM tasks WHERE book_id = ?", (book_id,))
+            connection.execute(
+                """
+                UPDATE book_deletions
+                SET state = 'completed', error = '', updated_at = ?
+                WHERE book_id = ?
+                """,
+                (now, book_id),
+            )
+
+    def get_book_deletion(self, book_id: str) -> BookDeletionRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM book_deletions WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+        return self._book_deletion_from_row(row) if row else None
+
+    def list_incomplete_book_deletions(self) -> list[BookDeletionRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM book_deletions
+                WHERE state != 'completed'
+                ORDER BY created_at
+                """
+            ).fetchall()
+        return [self._book_deletion_from_row(row) for row in rows]
 
     def move_before(self, task_id: str, before_task_id: str) -> None:
         with self._connect() as connection:
@@ -417,11 +693,24 @@ class TaskStore:
             error=row["error"],
             message=row["message"],
             cancel_requested=bool(row["cancel_requested"]),
+            delete_requested=bool(row["delete_requested"]),
             queue_order=row["queue_order"],
-            run_id=row["run_id"],
             result=_decode(row["result_json"], {}),
             estimate=_decode(row["estimate_json"], {}),
             metrics=_decode(row["metrics_json"], {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _book_deletion_from_row(row: sqlite3.Row) -> BookDeletionRecord:
+        manifest = _decode(row["manifest_json"], [])
+        return BookDeletionRecord(
+            book_id=row["book_id"],
+            state=row["state"],
+            recycle_path=row["recycle_path"],
+            manifest=manifest if isinstance(manifest, list) else [],
+            error=row["error"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

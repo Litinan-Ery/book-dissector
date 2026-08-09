@@ -4,16 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>图书拆解器</title>
-  <link rel="stylesheet" href="/static/style.css?v=3" />
+  <link rel="stylesheet" href="/static/style.css?v=4" />
 </head>
 <body>
   <header class="hero">
     <div>
-      <p class="eyebrow">TRACEABLE BOOK DISTILLATION</p>
+      <p class="eyebrow">FAST BOOK DISTILLATION</p>
       <h1>图书拆解器</h1>
-      <p class="subtitle">一次发起，完成校验、删减、预算、提炼、去重、核验与导出。</p>
+      <p class="subtitle">一次发起，完成删减、压缩、精华提取与导出。</p>
     </div>
-    <span class="priority">P0 质量优先</span>
+    <span class="priority">简洁 · 可恢复</span>
   </header>
 
   <main>
@@ -86,7 +86,7 @@
         </label>
       </div>
       <div id="estimate-box" class="estimate-box">正在计算时间、调用量与费用区间…</div>
-      <label class="consent">
+      <label class="consent" id="cloud-consent-row">
         <input type="checkbox" id="cloud-consent" />
         <span>我已知晓：提炼所需的正文片段会发送给 DeepSeek 云端；原文件与中间产物保留在本机。</span>
       </label>
@@ -95,12 +95,11 @@
         <button type="button" id="btn-preview-prune">高级：预览删减</button>
       </div>
       <p class="hint" id="distill-progress" role="status"></p>
-      <div id="quality-summary" class="quality-summary" hidden></div>
+      <div id="modality-warnings" class="quality-summary" hidden></div>
       <pre id="distill-result" class="preview" hidden></pre>
       <p class="hint" id="distill-stats"></p>
       <div class="row" id="export-actions" hidden>
-        <button type="button" id="btn-do-export" class="primary">再次导出正式 MD</button>
-        <button type="button" id="btn-diagnostic-export">导出诊断稿</button>
+        <button type="button" id="btn-do-export" class="primary">再次导出 MD</button>
       </div>
       <p class="hint" id="export-status"></p>
     </section>
@@ -119,7 +118,19 @@
     </section>
   </main>
 
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <form method="dialog" class="confirm-card">
+      <h2 id="confirm-title">确认操作</h2>
+      <div id="confirm-details" class="confirm-details"></div>
+      <p id="confirm-error" class="confirm-error" role="alert" hidden></p>
+      <div class="row confirm-actions">
+        <button type="button" id="confirm-cancel">取消</button>
+        <button type="button" id="confirm-submit" class="danger">确认</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer>原文件、任务状态与中间产物保存在本机；启用提炼时，必要的正文片段会发送给 DeepSeek。</footer>
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>

@@ -15,6 +15,7 @@ def get_settings() -> SettingsView:
     return SettingsView(
         deepseek_api_key_configured=bool(config.get_api_key()),
         deepseek_model=config.DEEPSEEK_MODEL,
+        cloud_consent_confirmed=config.has_cloud_consent(),
     )
 
 

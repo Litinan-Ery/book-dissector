@@ -5,17 +5,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from .domain import (
-    KnowledgeUnit,
-    BudgetPlan,
-    OrientationScan,
-    QualityReport,
-    QualityStatus,
-    SpanMapEntry,
-    SpanMapReport,
-    UnitCoverageReport,
-)
-
 
 class BookInfo(BaseModel):
     """导入书籍的基本信息（含 M2 文本提取结果）。"""
@@ -30,6 +19,7 @@ class BookInfo(BaseModel):
     word_count: int = 0
     extract_status: str = "pending"  # pending / processing / ok / error
     extract_error: str = ""
+    modality_warnings: list[dict] = Field(default_factory=list)
 
 
 class SettingsUpdate(BaseModel):
@@ -43,6 +33,7 @@ class SettingsView(BaseModel):
 
     deepseek_api_key_configured: bool
     deepseek_model: str
+    cloud_consent_confirmed: bool = False
 
 
 class ApiKeyTestResult(BaseModel):
@@ -56,17 +47,38 @@ class TaskStatus(BaseModel):
     """拆解任务状态。"""
 
     task_id: str
-    status: str  # pending / running / done / quality_failed / error
+    status: str  # pending / running / done / error
     stage: str = ""
     current: int = 0
     total: int = 0
     error: str = ""
     message: str = ""
     book_id: str = ""
-    run_id: str = ""
+    delete_requested: bool = False
     estimate: dict = Field(default_factory=dict)
-    metrics: dict = Field(default_factory=dict)
     result: dict = Field(default_factory=dict)
+
+
+class DeletionResult(BaseModel):
+    resource_id: str
+    state: str  # deleted / deleting
+    message: str
+    already_absent: bool = False
+
+
+class BookDeletionPreview(BaseModel):
+    book_id: str
+    title: str
+    task_count: int
+    active_task_ids: list[str] = Field(default_factory=list)
+    will_delete: list[str] = Field(default_factory=list)
+    will_keep: list[str] = Field(default_factory=list)
+
+
+class RevealOutputResult(BaseModel):
+    ok: bool
+    path: str
+    message: str
 
 
 class DisassembleRequest(BaseModel):
@@ -77,10 +89,6 @@ class DisassembleRequest(BaseModel):
     cloud_consent: bool = False
 
 
-class MoveTaskRequest(BaseModel):
-    before_task_id: str
-
-
 class ChapterDistillOut(BaseModel):
     """一章的蒸馏结果。"""
 
@@ -89,7 +97,6 @@ class ChapterDistillOut(BaseModel):
     target_chars: int
     output_chars: int
     error: str = ""
-    unit_id: str = ""
 
 
 class DistillResultOut(BaseModel):
@@ -103,30 +110,10 @@ class DistillResultOut(BaseModel):
     total_source_chars: int
     total_output_chars: int
     api_calls: int
-    cache_hits: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    prompt_cache_hit_tokens: int = 0
-    prompt_cache_miss_tokens: int = 0
-    actual_cost_cny: float = 0.0
     errors: list[str]
     kept_ratio: float
-    knowledge_units: list[KnowledgeUnit] = Field(default_factory=list)
-    anchor_coverage: float = 0.0
-    unit_coverage: UnitCoverageReport = Field(
-        default_factory=lambda: UnitCoverageReport(coverage=0.0)
-    )
-    duplicate_merged_count: int = 0
-    quality_report: QualityReport = Field(
-        default_factory=lambda: QualityReport(
-            status=QualityStatus.FAIL,
-            body_coverage=0.0,
-            anchor_coverage=0.0,
-            blocking_issues=["尚未执行质量校验"],
-        )
-    )
-    orientation_scan: OrientationScan | None = None
-    budget_plan: BudgetPlan | None = None
+    cache_hits: int = 0
+    modality_warnings: list[dict] = Field(default_factory=list)
 
 
 class PruneRegion(BaseModel):
@@ -155,14 +142,7 @@ class PruneResultOut(BaseModel):
     original_chars: int
     removed_chars: int
     kept_ratio: float
-    pruned_chapters: list[ChapterInfo] = Field(default_factory=list)
-    evidence_regions: list[PruneRegion] = Field(default_factory=list)
-    span_map: list[SpanMapEntry] = Field(default_factory=list)
-    span_map_report: SpanMapReport = Field(
-        default_factory=lambda: SpanMapReport(
-            valid=False, source_coverage=0.0, target_coverage=0.0
-        )
-    )
+    pruned_chapters: list[ChapterInfo] = []
 
 
 class RestoreRequest(BaseModel):

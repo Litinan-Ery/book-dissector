@@ -3,9 +3,6 @@ from pathlib import Path
 from ebooklib import epub
 
 from app.core.extractors.epub import extract
-from app.core.modalities import inventory_content
-from app.core.runs import fingerprint_file
-from app.models.domain import Modality
 
 
 def _build_epub(path: Path) -> None:
@@ -18,11 +15,6 @@ def _build_epub(path: Path) -> None:
         <html><body>
         <h1>第一章</h1><p>第一章正文。</p>
         <h2>第一节</h2><p>第一节正文。</p>
-        <table><tr><th>指标</th><th>数值</th></tr><tr><td>覆盖率</td><td>99%</td></tr></table>
-        <img src="missing.png" alt="流程图" />
-        <math><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></math>
-        <pre>print("evidence")</pre>
-        <aside epub:type="footnote">关键限制条件。</aside>
         </body></html>
     """
     book.add_item(chapter)
@@ -46,26 +38,3 @@ def test_headings_in_same_xhtml_have_distinct_source_offsets(tmp_path: Path) -> 
     for chapter in result.chapters:
         assert result.text[chapter.start_char :].startswith(chapter.title)
         assert chapter.start_char < chapter.end_char
-
-
-def test_epub_preserves_required_modality_markers(tmp_path: Path) -> None:
-    source = tmp_path / "mixed.epub"
-    _build_epub(source)
-
-    result = extract(source)
-    blocks = inventory_content(
-        result.text,
-        fingerprint_file(source),
-        "epub",
-        result.chapters,
-    )
-
-    assert {block.modality for block in blocks} >= {
-        Modality.TEXT,
-        Modality.HEADING,
-        Modality.TABLE,
-        Modality.IMAGE,
-        Modality.FORMULA,
-        Modality.CODE,
-        Modality.FOOTNOTE,
-    }

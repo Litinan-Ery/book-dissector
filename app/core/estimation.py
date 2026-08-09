@@ -11,7 +11,6 @@ PRICING_SOURCE = "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/"
 INPUT_CACHE_HIT_CNY_PER_M = 0.02
 INPUT_CACHE_MISS_CNY_PER_M = 1.0
 OUTPUT_CNY_PER_M = 2.0
-PEAK_MULTIPLIER = 2.0
 
 
 def estimate_text_tokens(text: str) -> int:
@@ -28,7 +27,7 @@ def estimate_cost_cny(*, input_tokens: int, output_tokens: int) -> dict:
     high = (
         input_tokens * INPUT_CACHE_MISS_CNY_PER_M
         + output_tokens * OUTPUT_CNY_PER_M
-    ) * PEAK_MULTIPLIER / 1_000_000
+    ) / 1_000_000
     return {
         "low_cny": round(low, 6),
         "high_cny": round(high, 6),
@@ -53,10 +52,15 @@ def estimate_request(
     *,
     target_ratio: float,
     max_chunk_chars: int,
+    api_calls: int | None = None,
 ) -> dict:
     if max_chunk_chars <= 0:
         raise ValueError("max_chunk_chars must be positive")
-    calls = max(1, math.ceil(len(text) / max_chunk_chars)) if text else 0
+    calls = (
+        max(0, int(api_calls))
+        if api_calls is not None
+        else (max(1, math.ceil(len(text) / max_chunk_chars)) if text else 0)
+    )
     source_tokens = estimate_text_tokens(text)
     # 来源标签、JSON schema 与系统提示造成输入开销；每次调用再预留约 300 tokens。
     input_tokens = math.ceil(source_tokens * 1.12) + calls * 300

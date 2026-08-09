@@ -8,63 +8,13 @@ from pathlib import Path
 from ebooklib import ITEM_DOCUMENT, epub
 
 from .base import Chapter, ExtractResult
+from ..modalities import detect_html_modalities, merge_warnings
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _plain(fragment: str) -> str:
-    return html.unescape(_TAG_RE.sub("", fragment)).strip()
-
-
-def _preserve_modalities(raw: str) -> str:
-    """把会被去标签过程吞掉的模态变成显式文本标记。"""
-    raw = re.sub(
-        r"<pre[^>]*>(.*?)</pre>",
-        lambda match: f"\n```\n{_plain(match.group(1))}\n```\n",
-        raw,
-        flags=re.I | re.S,
-    )
-
-    def table_replacement(match: re.Match[str]) -> str:
-        rows: list[str] = []
-        for row in re.findall(r"<tr[^>]*>(.*?)</tr>", match.group(1), flags=re.I | re.S):
-            cells = [
-                _plain(cell)
-                for cell in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, flags=re.I | re.S)
-            ]
-            if cells:
-                rows.append("| " + " | ".join(cells) + " |")
-        rendered = "\n".join(rows) or _plain(match.group(1))
-        return f"\n[表格]\n{rendered}\n"
-
-    raw = re.sub(
-        r"<table[^>]*>(.*?)</table>", table_replacement, raw, flags=re.I | re.S
-    )
-    raw = re.sub(
-        r"<math[^>]*>(.*?)</math>",
-        lambda match: f"\n[公式：{_plain(match.group(1))}]\n",
-        raw,
-        flags=re.I | re.S,
-    )
-    raw = re.sub(
-        r"<(?:aside|span)[^>]*(?:epub:type|role)=[\"'][^\"']*(?:footnote|doc-footnote)[^\"']*[\"'][^>]*>(.*?)</(?:aside|span)>",
-        lambda match: f"\n[脚注] {_plain(match.group(1))}\n",
-        raw,
-        flags=re.I | re.S,
-    )
-
-    def image_replacement(match: re.Match[str]) -> str:
-        tag = match.group(0)
-        alt_match = re.search(r"\balt=[\"']([^\"']*)[\"']", tag, flags=re.I)
-        alt = html.unescape(alt_match.group(1)).strip() if alt_match else ""
-        return f"\n[图片：{alt or '无替代文本'}]\n"
-
-    return re.sub(r"<img\b[^>]*>", image_replacement, raw, flags=re.I)
-
-
 def _clean_html(raw: str) -> str:
     """去标签 + 去实体 + 折叠空行，保留段落换行。"""
-    raw = _preserve_modalities(raw)
     # 块级标签后补换行，避免段落粘连
     raw = re.sub(r"</(p|div|h[1-6]|li|blockquote|tr)>", "\n", raw, flags=re.I)
     raw = re.sub(r"<(br|hr)[^>]*>", "\n", raw, flags=re.I)
@@ -97,6 +47,7 @@ def extract(path: Path) -> ExtractResult:
 
     chapters: list[Chapter] = []
     parts: list[str] = []
+    modality_warnings: list[dict] = []
 
     # 仅按 EPUB spine（阅读顺序）提取正文，导航页虽然也是 XHTML，
     # 但不能被当作正文或章节重复读入。
@@ -115,6 +66,9 @@ def extract(path: Path) -> ExtractResult:
 
     for item in ordered_items:
         raw = item.get_content().decode("utf-8", errors="replace")
+        modality_warnings.extend(
+            detect_html_modalities(raw, location=item.get_name() or "EPUB 正文")
+        )
         text = _clean_html(raw)
         if not text.strip():
             continue
@@ -154,4 +108,5 @@ def extract(path: Path) -> ExtractResult:
         source_format="epub",
         text=full,
         chapters=chapters,
+        modality_warnings=merge_warnings(modality_warnings),
     )

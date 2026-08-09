@@ -88,6 +88,7 @@ th, td { padding: 11px 8px; border-bottom: 1px solid #e5eae5; text-align: left; 
 th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
 .book-title { font-weight: 750; }
 .book-meta { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+.book-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .task-list { display: grid; gap: 10px; }
 .task-empty { padding: 18px; border: 1px dashed #cbd5cc; border-radius: 12px; color: var(--muted); text-align: center; }
@@ -100,11 +101,29 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .status.fail { color: var(--red); background: #fae9e7; }
 .status.wait { color: var(--amber); background: #fff1d8; }
 
+dialog {
+  width: min(560px, calc(100% - 32px));
+  padding: 0;
+  border: 1px solid #cbd5cc;
+  border-radius: 16px;
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: 0 24px 80px rgba(20, 34, 24, 0.24);
+}
+dialog::backdrop { background: rgba(19, 29, 22, 0.42); }
+.confirm-card { padding: 22px; }
+.confirm-card h2 { margin: 0 0 14px; font-size: 20px; }
+.confirm-details { display: grid; gap: 8px; color: #465048; font-size: 13px; line-height: 1.6; }
+.confirm-details p { margin: 0; }
+.confirm-details ul { margin: 0; padding-left: 20px; }
+.confirm-error { padding: 10px; border-radius: 8px; color: var(--red); background: #fae9e7; font-size: 12px; }
+.confirm-actions { justify-content: flex-end; margin-top: 20px; }
+.confirm-actions button.danger { border-color: var(--red); color: #fff; background: var(--red); }
+
 .estimate-box { margin: 16px 0; padding: 14px; border-left: 4px solid var(--green); border-radius: 8px; background: var(--green-soft); font-size: 13px; line-height: 1.65; }
 .consent { display: flex; grid-template-columns: auto 1fr; align-items: start; gap: 10px; padding: 12px; border: 1px solid #d8e2d9; border-radius: 10px; font-weight: 500; line-height: 1.55; }
 .actions { margin-top: 14px; }
-.quality-summary { margin-top: 14px; padding: 14px; border-radius: 10px; background: #f6f8f5; font-size: 13px; line-height: 1.65; }
-.quality-summary.fail { color: #7b2525; background: #fff0ee; }
+.quality-summary { margin-top: 14px; padding: 14px; border-radius: 10px; color: #7a4b08; background: #fff4dc; font-size: 13px; line-height: 1.65; }
 .preview { max-height: 420px; overflow: auto; margin-top: 14px; padding: 14px; border: 1px solid #dce3dd; border-radius: 10px; background: #f7f9f6; white-space: pre-wrap; word-break: break-word; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .split h3 { margin: 12px 0 0; font-size: 13px; }

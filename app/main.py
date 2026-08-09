@@ -17,18 +17,23 @@ from starlette.responses import Response
 
 from . import config
 from .api import books, export, prune, settings, tasks
+from .core.library_cleanup import recover_incomplete_book_deletions
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
-    """启动后在 5 秒目标内恢复 SQLite 中断任务并重新入队。"""
+async def lifespan(_app: FastAPI):
+    recover_incomplete_book_deletions(tasks._get_store())
+    books.recover_incomplete_extractions()
     tasks.recover_and_schedule()
-    yield
+    try:
+        yield
+    finally:
+        tasks.shutdown_runtime()
 
 app = FastAPI(
     title="图书拆解器",
     description="导入书籍 → 删减无关内容 → 压缩提炼 → 导出精华 MD",
-    version="0.2.0",
+    version="0.2.1",
     lifespan=lifespan,
 )
 
